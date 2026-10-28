@@ -330,7 +330,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
     }
 
     char created[64], disk_guid[37], user_type[37], user_unique[37], unix_type[37], unix_unique[37];
-    char metadata_hex[65], fs_sb_hex[65], primary_hex[65], backup_hex[65];
+    char metadata_hex[65], primary_hex[65], backup_hex[65];
     uint8_t h[32];
     now_utc(created, sizeof(created));
     uuid_format_le(s.gpt.disk_guid, disk_guid);
@@ -339,7 +339,6 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
     set_guid(unix_type, layout.unixnu_type_guid);
     set_guid(unix_unique, layout.unixnu_unique_guid);
     hex_encode(metadata_hash, 32, metadata_hex);
-    hex_encode(s.fs.sb_sha256, 32, fs_sb_hex);
     sha256_buf(s.gpt.primary, s.gpt.primary_len, h);
     hex_encode(h, 32, primary_hex);
     sha256_buf(s.gpt.backup, s.gpt.backup_len, h);
@@ -378,7 +377,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "gpt_disk_guid=%s\n"
         "fs_blocks=%" PRIu64 "\n"
         "fs_uuid=%s\n"
-        "fs_sb_sha256=%s\n"
+        "fs_sb_offset=%u\n"
         "fs_feature=%u\n"
         "limit_blocks=%" PRIu64 "\n"
         "expected_blocks=%" PRIu64 "\n"
@@ -399,7 +398,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         layout.new_userdata_bytes, s.dev.metadata_index, s.dev.metadata_start_lba,
         s.dev.metadata_end_lba, s.dev.metadata_bytes, metadata_hex, primary_hex, backup_hex,
         primary_len, backup_len, 2u, backup_lba, disk_guid, s.fs.blocks, s.fs.uuid,
-        fs_sb_hex, s.fs.feature, limit_blocks, expected, layout.unixnu_index,
+        s.fs.sb_offset, s.fs.feature, limit_blocks, expected, layout.unixnu_index,
         layout.unixnu_start, layout.unixnu_end, layout.unixnu_bytes, unix_type,
         unix_unique, user_type, user_unique, layout.userdata_attrs, layout.tail_gap_bytes,
         confirm);
@@ -657,7 +656,6 @@ static int plan_kv(void *arg, const char *key, const char *val)
     PLAN_STR(gpt_backup_sha256)
     PLAN_STR(gpt_disk_guid)
     PLAN_STR(fs_uuid)
-    PLAN_STR(fs_sb_sha256)
     PLAN_STR(unixnu_type_guid)
     PLAN_STR(unixnu_unique_guid)
     PLAN_STR(userdata_type_guid)
@@ -666,6 +664,7 @@ static int plan_kv(void *arg, const char *key, const char *val)
     PLAN_U64(size_bytes)
     PLAN_U64(disk_bytes)
     PLAN_U32(sector)
+    PLAN_U32(fs_sb_offset)
     PLAN_I32(userdata_index)
     PLAN_U64(userdata_start_lba)
     PLAN_U64(userdata_end_lba)
@@ -794,9 +793,8 @@ int plan_match_state(const plan_info_t *plan, const state_t *s, char *err, size_
         return failf(err, errlen, "F2FS UUID changed since planning");
     if (plan->fs_feature != s->fs.feature)
         return failf(err, errlen, "F2FS features changed since planning");
-    hex_encode(s->fs.sb_sha256, 32, hex);
-    if (strcasecmp(plan->fs_sb_sha256, hex))
-        return failf(err, errlen, "F2FS superblock changed since planning");
+    if (plan->fs_sb_offset != s->fs.sb_offset)
+        return failf(err, errlen, "the active F2FS superblock changed since planning");
     uint8_t metadata[32];
     if (metadata_content_hash(NULL, (device_t *)&s->dev, metadata, err, errlen) < 0)
         return -1;

@@ -54,6 +54,7 @@ static int read_cp(int fd, uint32_t cp_blkaddr, uint32_t segment_blocks, f2fs_in
     uint64_t v1 = le64(cp[1]);
     const uint8_t *use = v1 > v0 ? cp[1] : cp[0];
     info->cp_copies_match = !memcmp(cp[0], cp[1], 4092);
+    info->cp1_newer = v1 > v0;
     info->cp_present = 1;
     info->cp_version = le64(use);
     info->cp_user_blocks = le64(use + 8);
@@ -67,11 +68,20 @@ static int read_cp(int fd, uint32_t cp_blkaddr, uint32_t segment_blocks, f2fs_in
 static int probe_buffer(const uint8_t *buf, uint64_t partition_bytes, f2fs_info_t *info,
                         char *err, size_t errlen)
 {
-    const uint8_t *s = buf + F2FS_SUPER_OFFSET;
+    const uint8_t *first = buf + F2FS_SUPER_OFFSET;
+    const uint8_t *s = first;
     const uint8_t *t = buf + F2FS_BLOCK_BYTES + F2FS_SUPER_OFFSET;
     memset(info, 0, sizeof(*info));
-    if (memcmp(s, t, F2FS_SUPER_SIZE))
-        return failf(err, errlen, "F2FS superblock copies disagree");
+    /* The kernel prefers the second copy, so report the newer one on a mismatch. */
+    if (le32(first) == F2FS_MAGIC && memcmp(first, t, F2FS_SUPER_SIZE)) {
+        info->sb_offset = F2FS_BLOCK_BYTES + F2FS_SUPER_OFFSET;
+        s = t;
+    } else if (le32(first) != F2FS_MAGIC || memcmp(first, t, F2FS_SUPER_SIZE)) {
+        /* One damaged copy is exactly what a torn update leaves behind. */
+        if (le32(first) != F2FS_MAGIC && le32(t) != F2FS_MAGIC)
+            return failf(err, errlen, "userdata is not F2FS");
+        return failf(err, errlen, "F2FS superblock copies disagree and neither copy is usable");
+    }
     if (le32(s) != F2FS_MAGIC)
         return failf(err, errlen, "userdata is not F2FS");
     uint32_t log_sectorsize = le32(s + 8);
@@ -102,6 +112,7 @@ static int probe_buffer(const uint8_t *buf, uint64_t partition_bytes, f2fs_info_
     info->segs_per_sec = segs_per_sec;
     info->section_blocks = info->blocks_per_seg * info->segs_per_sec;
     info->blocks = le64(s + 36);
+    info->cp_blkaddr = le32(s + 76);
     info->section_count = le32(s + 44);
     info->segment_count = le32(s + 48);
     info->segment_count_main = le32(s + 68);
@@ -119,9 +130,7 @@ int f2fs_probe_fd(int fd, uint64_t partition_bytes, f2fs_info_t *info, char *err
         return failf(err, errlen, "cannot read both F2FS superblocks");
     if (probe_buffer(buf, partition_bytes, info, err, errlen) < 0)
         return -1;
-    sha256_buf(buf, sizeof(buf), info->sb_sha256);
-    uint32_t cp_blkaddr = le32(buf + F2FS_SUPER_OFFSET + 76);
-    if (read_cp(fd, cp_blkaddr, info->blocks_per_seg, info, err, errlen) < 0)
+    if (read_cp(fd, info->cp_blkaddr, info->blocks_per_seg, info, err, errlen) < 0)
         return -1;
     if (info->ckpt_flags & (F2FS_CP_FLAG_DISABLED | F2FS_CP_FLAG_ERROR))
         return failf(err, errlen, "F2FS checkpoint is disabled or marked with an error");

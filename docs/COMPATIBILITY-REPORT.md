@@ -11,11 +11,12 @@ recovery/filesystem compatibility. Hardware results are deliberately separated
 into read-only and destructive work and are kept in
 [`HARDWARE-TEST-REPORT.md`](HARDWARE-TEST-REPORT.md).
 
-**Read this first:** no physical Amethyst device was available. Nothing here
-establishes that apply preserves data on real hardware, that the Amethyst
-recovery kernel implements `F2FS_IOC_RESIZE_FS`, or that the resulting layout
-boots either system. Apply mode stays disabled for real devices until the
-hardware-validation sequence in `README.md` is executed.
+**Read this first:** read-only Inspect has now run on a real Amethyst and passed
+every structural prerequisite; Plan and Apply have not run anywhere but a
+fixture. Nothing here establishes that apply preserves data on real hardware,
+that the Amethyst recovery kernel implements `F2FS_IOC_RESIZE_FS`, or that the
+resulting layout boots either system. See
+[`HARDWARE-TEST-REPORT.md`](HARDWARE-TEST-REPORT.md) §1 for the device results.
 
 ## 1. Upstream reference under review
 
@@ -52,6 +53,7 @@ ZIP cannot reproduce it.
 | Confirmation | `f"{adb.serial} unixnu {bytes}"` typed on the host | `unixnu <plan_id> <serial> <unixnu_bytes>` plus `acknowledge_data_loss = yes`; a ZIP install alone never triggers apply |
 | GPT layout math | `gpt.py` `GPT.split()` | Reimplemented in `src/gpt.c`; proven byte-identical to upstream (see §4) |
 | F2FS shrink | `f2fs-shrink.c` ioctl + section rounding | Same algorithms in `src/f2fs.c`; rounding functions match upstream exactly |
+| Superblock pair | `f2fs-shrink.c` refuses unless both copies are byte-identical | Same refusal where neither copy is valid; a mismatch with one valid copy is a warning that names the active copy, because Linux mounts that filesystem |
 | Backups | Optional, per `9fd45ef` | Apply refuses to run unless the operator confirms a verified off-device backup exists |
 | Sequencing | `twrp.sh`: shrink, verify, unmount, write backup GPT, verify, write primary GPT, verify | Same order, with a persisted `stage` file and a post-unmount metadata re-hash before any GPT byte is written |
 | Interruption | Documented as unrecoverable; no automatic rollback | Same stance; stage and errors are persisted and the bundle refuses a second run |
@@ -69,9 +71,9 @@ only the mode the installer requests differs.
 
 | ZIP | SHA-256 | Mode |
 | --- | --- | --- |
-| `Amethyst-UniXNU-Partitioner-Inspect.zip` | `dd714c55a77975845480fcb9a03637d209b9424c29808f97afcb8215c7152855` | read-only inspect |
-| `Amethyst-UniXNU-Partitioner-Plan.zip` | `f251210996272b70239edaefba47bfcfd44eb5a5582327724e2bf6614ec83be5` | plan bundle only |
-| `Amethyst-UniXNU-Partitioner-Apply.zip` | `e3c20a7aba3a7e82a9345bf8b266d9e0dec3ae6eaf325b8bf7bc48a1410cf7a7` | gated destructive apply |
+| `Amethyst-UniXNU-Partitioner-Inspect.zip` | `685eec24396e98d0f6837ddf6d500d1ee4d6dbd93773c97e9d5870da6e462975` | read-only inspect |
+| `Amethyst-UniXNU-Partitioner-Plan.zip` | `9bba09bd70e58b3caed335ed6b211d3c0396c944822c176c6965b8e673fcb9d7` | plan bundle only |
+| `Amethyst-UniXNU-Partitioner-Apply.zip` | `2734fa37694d979203559b36e5f973a1482a451c3a63edcc5ee7e93508a1f13f` | gated destructive apply |
 
 These are the hashes of the archives in this commit. `dist/SHA256SUMS` is the
 file to check against for copies you distribute.
@@ -99,10 +101,10 @@ mismatch is resolved.
 ### Helper binary
 
 ```
-SHA-256 : b391c6d5ef6274a2ce9c0f565b6eaa5ac45b024a5ccbbb1b0b95894ac2d0a33c
+SHA-256 : 5ab4821747debb40bd140d90818adfc95dcd859ae96acb7d027fcb5aff4b34cc
 file    : ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV),
           statically linked, stripped
-size    : 176392 bytes
+size    : 198352 bytes
 ```
 
 The installer pins this hash and verifies `bin/partitioner` before executing it.

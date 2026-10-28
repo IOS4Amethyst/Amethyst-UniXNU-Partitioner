@@ -2,29 +2,134 @@
 
 Report date: 2026-10-28
 
-## Summary
+## 1. Amethyst hardware: read-only Inspect runs
+
+Two read-only Inspect runs were executed on the real device. Nothing was
+written, resized or repartitioned, and no plan or apply was attempted.
+
+Device and recovery as reported by the helper:
+
+```
+Device                  : amethyst
+Model                   : Redmi Note 14 Pro+ 5G
+Hardware serial         : 42fe0af2
+Recovery                : OrangeFox R12.0 (reports itself as "recovery")
+Kernel                  : 6.1.138-android14-Wild, aarch64
+Storage                 : /dev/block/sda, 4096-byte logical sectors
+Disk size               : 509859594240 bytes (124477440 sectors)
+userdata                : /dev/block/sda33, index 33, LBA 2539520..124477434
+metadata                : /dev/block/sda21, index 21, LBA 16384..32767
+GPT                     : 33 of 64 entries, first unused entry 34
+```
+
+Every structural prerequisite for the split passed on hardware:
+
+| Check | Result |
+| --- | --- |
+| `userdata` is the last occupied partition | PASS (`sda33` ends at the last usable LBA) |
+| `userdata` start alignment | PASS (4096-byte aligned) |
+| `unixnu` entry already exists | PASS (no) |
+| Unused GPT entry | PASS (entry 34) |
+| Primary/backup GPT CRCs and entry array CRC | PASS (identical across both runs) |
+| F2FS geometry | PASS (4096-byte blocks, 512 blocks/segment, 1 segment/section) |
+| `userdata` encryption footer vs mapping length | PASS (no footer: the mapping equals the partition) |
+| Disk and sector geometry | PASS (4096-byte sectors, whole-sector disk size) |
+
+### Run 1: mounted metadata and a dirty filesystem
+
+`RESULT: UNSUPPORTED`. Blockers, in the helper's own wording:
+
+```
+WARNING: F2FS checkpoint copies differ; the filesystem may be unclean
+WARNING: F2FS encrypt feature is set; recovery must decrypt /data before planning
+WARNING: the read-only F2FS resize capability probe was inconclusive
+UNSUPPORTED: metadata is mounted
+```
+
+`/metadata` was mounted at `/dev/block/sda21` because OrangeFox had mounted it,
+and the F2FS checkpoint copies disagreed, which means Android was not shut down
+cleanly before recovery started. Two further probes reported `unknown`:
+
+```
+F2FS ioctl namespace        : unknown
+GET_FEATURES ioctl          : no/unknown
+resize symbol in kallsyms   : no/unknown
+```
+
+The recovery image is not TWRP (`getprop ro.twrp.version` is empty), so the
+kallsyms probe and the `F2FS_IOC_GET_FEATURES` probe cannot be trusted as
+evidence either way. Neither is a statement about `F2FS_IOC_RESIZE_FS`.
+
+### Run 2: unmounted, but the filesystem could not be read
+
+`RESULT: UNSUPPORTED`, for exactly one reason:
+
+```
+UNSUPPORTED: filesystem: F2FS superblock copies disagree
+```
+
+This run had `/data` unmounted (`Decrypted /data mapping : none`) and
+`/metadata` unmounted. The helper then read the raw `userdata` block device, and
+the two superblock copies at offsets 1024 and 5120 did not agree. Because
+version 0.1.0 compared both copies and refused on any difference, the helper
+reported the filesystem as unreadable instead of analysing it.
+
+That refusal is a defect in the tool, not a property of the phone. The Linux
+F2FS mount path only requires the second superblock to carry the magic number
+and prefers the newer copy; it does not require the copies to be identical.
+`vendor/unixnu-dual_sys/f2fs-shrink.c`, the upstream reference this project is
+validated against, rejects mismatched superblocks, so the stricter behaviour was
+intentional, but it produces an unusable verdict rather than an actionable one.
+
+### Tool changes prompted by these runs
+
+- A superblock mismatch with a valid second copy is now a warning that names the
+  active offset (`fs_sb_offset`, `Superblocks match`), not a refusal. A plan
+  records the active offset and apply refuses if it changes.
+- A mismatch where neither copy carries the F2FS magic is still a hard refusal
+  (`userdata is not F2FS`), and one damaged copy is reported separately.
+- Every unsupported condition is now tagged `fixable-in-recovery` (operator can
+  clear it: mount state, serial, unreadable device) or `hard` (layout cannot
+  support the split), in both the text and JSON reports.
+- The newest F2FS checkpoint copy is reported when the checkpoint copies differ.
+
+### What is still unproven on hardware
 
 | Area | Result |
 | --- | --- |
-| Host build, self-test and offline fixture suite | **PASS** (165/165 checks) |
+| Inspect on hardware | **PASS** (read-only, both runs) |
+| Plan on hardware | **NOT RUN** |
+| Apply on hardware | **NOT RUN** |
+| Android boot after a split | **NOT RUN** |
+| `unixnu` formatting/boot integration | **NOT RUN** (out of scope) |
+
+A hardware pass still requires a clean shutdown, a Plan bundle reviewed off
+`userdata`, one authorized Apply, a post-reboot `verify`, and an Android boot
+with files intact. Until then this project makes no data-preserving claim.
+
+## 2. Host and offline results
+
+| Area | Result |
+| --- | --- |
+| Host build, self-test and offline fixture suite | **PASS** (166/166 checks) |
 | Host ASan/UBSan self-test, inspect, plan and fake apply | **PASS** |
-| Amethyst hardware inspect | **NOT RUN** |
+| Amethyst hardware inspect | **PASS**, read-only (see §1) |
 | Amethyst hardware plan | **NOT RUN** |
 | Amethyst hardware apply (authorized destructive) | **NOT RUN** |
 | Amethyst Android boot after split | **NOT RUN** |
 | Amethyst `unixnu` formatting/boot integration | **NOT RUN** (out of scope) |
 
-**No physical Amethyst device or recovery was available for this work.** All
-results below come from host builds and synthetic fixtures. Nothing in this
-report establishes that apply preserves data on real hardware, that the stock
-recovery kernel supports `F2FS_IOC_RESIZE_FS`, or that the resulting layout
-boots Android or UniXNU.
+**No destructive operation has run on an Amethyst device.** The hardware results
+in §1 are read-only Inspect runs. Nothing in this report establishes that apply
+preserves data on real hardware, that the Amethyst recovery kernel implements
+`F2FS_IOC_RESIZE_FS`, or that the resulting layout boots Android or UniXNU.
 
 ## Environment
 
 - Host: Linux x86_64.
-- Static helper: AArch64, musl, statically linked, stripped, built with the
-  Android clang and sysroot listed in `docs/SOURCE-AND-BUILD.md`.
+- Static helper: AArch64, musl, statically linked, stripped. It is built with
+  the Android clang if one is present, otherwise with the Alpine aarch64
+  toolchain under `qemu-user` as described in `docs/SOURCE-AND-BUILD.md`.
 - Helper self-test executed under `qemu-aarch64`.
 - Fixture: synthetic 512 MiB disk, 4096-byte sectors, 32 GPT entries,
   `boot`/`metadata`/`userdata`, single-device F2FS with checkpoints, serial
@@ -92,6 +197,9 @@ GPT image handling and independent consistency checks, not kernel behavior.
 | Unsupported F2FS block/segment/section geometry | PASS | refuses, disk unchanged |
 | Multi-device F2FS | PASS | refuses, disk unchanged |
 | F2FS block count larger than the partition | PASS | refuses, disk unchanged |
+| One F2FS superblock copy damaged | PASS | warns, names the active copy, continues read-only |
+| Both F2FS superblock copies damaged | PASS | refuses, disk unchanged |
+| Unsupported condition tagged `fixable-in-recovery` or `hard` | PASS | text and JSON reports |
 | Surviving `/data` bind mount | PASS | apply stops at `f2fs-verified`, GPT untouched |
 | Injected F2FS resize failure | PASS | stage `f2fs-shrink-started`, GPT untouched, no retry |
 | Injected backup GPT write failure | PASS | stage `gpt-backup-writing`, GPT untouched, no retry |
@@ -104,11 +212,17 @@ GPT image handling and independent consistency checks, not kernel behavior.
 Built artifacts for this report:
 
 ```
-e3c20a7aba3a7e82a9345bf8b266d9e0dec3ae6eaf325b8bf7bc48a1410cf7a7  Amethyst-UniXNU-Partitioner-Apply.zip
-dd714c55a77975845480fcb9a03637d209b9424c29808f97afcb8215c7152855  Amethyst-UniXNU-Partitioner-Inspect.zip
-f251210996272b70239edaefba47bfcfd44eb5a5582327724e2bf6614ec83be5  Amethyst-UniXNU-Partitioner-Plan.zip
-b391c6d5ef6274a2ce9c0f565b6eaa5ac45b024a5ccbbb1b0b95894ac2d0a33c  bin/partitioner (helper inside each ZIP)
+2734fa37694d979203559b36e5f973a1482a451c3a63edcc5ee7e93508a1f13f  Amethyst-UniXNU-Partitioner-Apply.zip
+685eec24396e98d0f6837ddf6d500d1ee4d6dbd93773c97e9d5870da6e462975  Amethyst-UniXNU-Partitioner-Inspect.zip
+9bba09bd70e58b3caed335ed6b211d3c0396c944822c176c6965b8e673fcb9d7  Amethyst-UniXNU-Partitioner-Plan.zip
+5ab4821747debb40bd140d90818adfc95dcd859ae96acb7d027fcb5aff4b34cc  bin/partitioner (helper inside each ZIP)
 ```
+
+Helper bytes: 198352. This build came from the Alpine aarch64 toolchain under
+`qemu-user`, so its hash differs from the Android-clang build recorded in the
+previous revision of this report even though the source is the same plus the
+changes in §1. Rebuild with `scripts/build-helper-qemu.sh` (or `scripts/build.sh`
+where an Android clang exists) and publish the new `dist/SHA256SUMS` with it.
 
 The helper hash is reproducible. The ZIP hashes are not: ZIP entry timestamps
 vary between builds, so a rebuild produces different archive bytes with

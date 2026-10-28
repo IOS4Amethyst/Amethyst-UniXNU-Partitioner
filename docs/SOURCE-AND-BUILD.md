@@ -30,6 +30,7 @@ This directory is self-contained. Nothing here modifies the existing
 | `tests/check_after.py` | Independent GPT/F2FS result checker for the fixture |
 | `tests/mock_reboot.py` | Simulates the post-reboot kernel partition view |
 | `scripts/build.sh` | Host binary, static helper and three ZIPs |
+| `scripts/build-helper-qemu.sh` | Static helper from an Alpine aarch64 rootfs under qemu-user (no Android clang) |
 
 ## Upstream provenance
 
@@ -77,6 +78,20 @@ Material differences from the host-side parent scripts:
 
 - `zip`, `sha256sum`, `od`, `readelf` and `file` for packaging/checks.
 - Optional: `qemu-aarch64` for running the static helper's self-test on the host.
+
+If no Android clang or AArch64 musl sysroot is available, the helper can still
+be built from an Alpine aarch64 minirootfs containing `gcc`, `binutils` and
+`musl-dev`, executed through a static `qemu-aarch64`:
+
+```sh
+ROOTFS=/path/to/alpine-aarch64-rootfs QEMU=/path/to/qemu-aarch64 \
+    ./scripts/build-helper-qemu.sh
+```
+
+That script does not use GCC's cross driver, because GCC cannot exec `cc1`, `as`
+or `collect2` from a foreign architecture. It invokes `cc1` and `as` directly and
+links with the aarch64 `ld` and an explicit crt/libc chain, then checks the ELF
+class, machine and absence of `PT_INTERP` and runs `selftest` under qemu.
 
 `scripts/build.sh` auto-detects common `$HOME/AndroidBuilds/*` toolchains. Set
 `CLANG` and `SYSROOT` explicitly for other installations.
@@ -129,6 +144,11 @@ The suite creates a temporary fixture, then checks:
 - simulated reboot plus `verify`, and rejection of a wrong kernel range;
 - ZIP layout, shell syntax, pinned helper hash, mode strings and absence of
   network references.
+
+Superblock handling is covered by these cases: two identical copies, one valid
+copy plus one damaged copy (warning naming the active copy), and two damaged
+copies (hard refusal). A plan records the active superblock offset
+(`fs_sb_offset`) and apply refuses if it changes.
 
 Test-only hooks are enabled with environment variables:
 

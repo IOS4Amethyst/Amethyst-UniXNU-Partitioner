@@ -139,13 +139,16 @@ typedef struct {
     uint64_t cp_version;
     uint64_t cp_user_blocks;
     uint64_t cp_valid_blocks;
+    uint32_t cp_blkaddr;
     uint32_t cp_free_segments;
     uint32_t cp_total_segments;
     int cp_copies_match;
+    int cp1_newer;
     int cp_present;
     char uuid[37];
     char volume_name[64];
-    uint8_t sb_sha256[32];
+    /* Start of the first superblock copy that disagrees, or 0 when they match. */
+    uint32_t sb_offset;
     int mounted;
     uint64_t f_blocks;
     uint64_t f_bfree;
@@ -218,6 +221,7 @@ typedef struct {
     char warnings[64][320];
     int n_warnings;
     char unsupported[64][320];
+    const char *unsupported_action[64];
     int n_unsupported;
 } state_t;
 
@@ -366,8 +370,8 @@ typedef struct {
     char gpt_disk_guid[37];
     uint64_t fs_blocks;
     char fs_uuid[40];
-    char fs_sb_sha256[65];
     uint32_t fs_feature;
+    uint32_t fs_sb_offset;
     uint64_t limit_blocks;
     uint64_t expected_blocks;
     int unixnu_index;

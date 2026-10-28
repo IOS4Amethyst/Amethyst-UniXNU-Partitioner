@@ -28,6 +28,20 @@ void state_free(state_t *s)
     memset(s, 0, sizeof(*s));
 }
 
+/* Tell the operator whether recovery can fix a condition or the layout cannot. */
+static const char *unsup_action(const char *text)
+{
+    static const char *const recovery[] = {
+        "metadata is mounted", "/data is mounted", "no hardware serial was found",
+        "filesystem: cannot open", "identity: cannot", "storage: cannot",
+        "the recovery kernel does not list f2fs support",
+    };
+    for (size_t i = 0; i < ARRAY_LEN(recovery); i++)
+        if (strstr(text, recovery[i]))
+            return "fixable-in-recovery";
+    return "hard";
+}
+
 static void add_unsup(state_t *s, const char *fmt, ...)
 {
     if (s->n_unsupported >= (int)ARRAY_LEN(s->unsupported))
@@ -36,6 +50,7 @@ static void add_unsup(state_t *s, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(s->unsupported[s->n_unsupported], 320, fmt, ap);
     va_end(ap);
+    s->unsupported_action[s->n_unsupported] = unsup_action(s->unsupported[s->n_unsupported]);
     s->n_unsupported++;
 }
 
@@ -224,6 +239,8 @@ static void print_fs(report_t *r, const state_t *s)
     rp_kv(r, "Features", "0x%08x%s%s", fs->feature,
           fs->encrypt_feature ? " encrypt" : "", fs->zoned ? " zoned" : "");
     rp_kv(r, "Checkpoint copies match", "%s", fs->cp_copies_match ? "yes" : "no");
+    if (!fs->cp_copies_match)
+        rp_kv(r, "Newest checkpoint", "%s", fs->cp1_newer ? "second copy" : "first copy");
     rp_kv(r, "Checkpoint version", "%" PRIu64, fs->cp_version);
     rp_kv(r, "Checkpoint flags", "0x%08x%s%s%s", fs->ckpt_flags,
           (fs->ckpt_flags & 0x00001000U) ? " disabled" : "",
@@ -232,9 +249,9 @@ static void print_fs(report_t *r, const state_t *s)
     rp_kv(r, "Checkpoint user blocks", "%" PRIu64, fs->cp_user_blocks);
     rp_kv(r, "Checkpoint valid blocks", "%" PRIu64, fs->cp_valid_blocks);
     rp_kv(r, "Checkpoint free segments", "%u", fs->cp_free_segments);
-    char hash[65];
-    hex_encode(fs->sb_sha256, 32, hash);
-    rp_kv(r, "Superblock SHA-256", "%s", hash);
+    rp_kv(r, "Superblocks match", "%s", fs->sb_offset ? "no" : "yes");
+    if (fs->sb_offset)
+        rp_kv(r, "Newest superblock offset", "%u", fs->sb_offset);
 }
 
 static void print_gpt(report_t *r, const state_t *s)
@@ -355,7 +372,8 @@ static void print_result(report_t *r, state_t *s)
     for (int i = 0; i < s->n_warnings; i++)
         rp(r, "WARNING: %s\n", s->warnings[i]);
     for (int i = 0; i < s->n_unsupported; i++)
-        rp(r, "UNSUPPORTED: %s\n", s->unsupported[i]);
+        rp(r, "UNSUPPORTED [%s]: %s\n", s->unsupported_action[i] ? s->unsupported_action[i] : "hard",
+           s->unsupported[i]);
     rp_section(r, "Verdict");
     rp(r, "RESULT: %s\n", state_verdict(s));
     rp(r, "\nDATA-LOSS WARNING: GPT and filesystem operations can destroy data. This inspect\n"
@@ -401,10 +419,11 @@ static void write_inspect_json(const state_t *s, const char *path)
     if (s->have_fs) {
         fprintf(f, "{\"type\":\"f2fs\",\"blocks\":%" PRIu64 ",\"block_size\":%u,\"blocks_per_seg\":%u,"
                 "\"segs_per_sec\":%u,\"section_blocks\":%u,\"mounted\":%s,\"available_blocks\":%" PRIu64 ","
-                "\"encrypt_feature\":%s,\"cp_copies_match\":%s}",
+                "\"encrypt_feature\":%s,\"cp_copies_match\":%s,\"sb_offset\":%u,\"cp1_newer\":%s}",
                 s->fs.blocks, s->fs.block_size, s->fs.blocks_per_seg, s->fs.segs_per_sec,
                 s->fs.section_blocks, s->fs.mounted ? "true" : "false", s->fs.f_bavail,
-                s->fs.encrypt_feature ? "true" : "false", s->fs.cp_copies_match ? "true" : "false");
+                s->fs.encrypt_feature ? "true" : "false", s->fs.cp_copies_match ? "true" : "false",
+                s->fs.sb_offset, s->fs.cp1_newer ? "true" : "false");
     } else {
         fprintf(f, "null");
     }
@@ -422,7 +441,11 @@ static void write_inspect_json(const state_t *s, const char *path)
     fprintf(f, "],\n  \"unsupported\": [");
     for (int i = 0; i < s->n_unsupported; i++) {
         if (i) fprintf(f, ", ");
+        fprintf(f, "{\"reason\": ");
         json_string(f, s->unsupported[i]);
+        fprintf(f, ", \"action\": ");
+        json_string(f, s->unsupported_action[i] ? s->unsupported_action[i] : "hard");
+        fprintf(f, "}");
     }
     fprintf(f, "]\n}\n");
     fclose(f);

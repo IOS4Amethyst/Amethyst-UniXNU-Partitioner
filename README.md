@@ -4,11 +4,22 @@ Experimental recovery-side tooling that creates a `unixnu` GPT partition beside
 the existing Android `userdata` partition on the Xiaomi Redmi Note 14 Pro+ 5G
 (`amethyst`, SM7635).
 
-**Status: software-tested only. It has not been run on Amethyst hardware.**
-Do not treat it as production-ready, and do not assume the split preserves data
-until a full hardware test with independent backups has passed. See
+**Status: read-only Inspect has run on Amethyst hardware; Plan and Apply have
+not.** Do not treat it as production-ready, and do not assume the split preserves
+data until a full hardware test with independent backups has passed. See
 [`docs/HARDWARE-TEST-REPORT.md`](docs/HARDWARE-TEST-REPORT.md) and
 [`docs/COMPATIBILITY-REPORT.md`](docs/COMPATIBILITY-REPORT.md).
+
+On the real device every structural prerequisite passes: `userdata` (`sda33`) is
+the last occupied partition, an unused GPT entry exists, and F2FS uses supported
+4096-byte blocks. The first run was refused because `/metadata` was mounted and
+the filesystem was unclean; the second because the two F2FS superblock copies
+disagreed. The second refusal was a tool defect and is fixed here, but no plan or
+apply has been run on hardware.
+
+Inspect reports every blocker as `UNSUPPORTED [fixable-in-recovery]` or
+`UNSUPPORTED [hard]`, so it is clear whether the operator can clear it or the
+layout cannot be split.
 
 The tool never installs an OS, never formats `unixnu`, and never writes boot
 images. It only shrinks F2FS online and rewrites the two GPT copies after a
@@ -81,8 +92,15 @@ Boot recovery, decrypt and mount `/data` read-write, then install
 /sdcard/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.json
 ```
 
-Require `RESULT: SUPPORTED`. If it says `UNSUPPORTED`, stop and read the listed
-reasons; do not continue.
+Require `RESULT: SUPPORTED`. If it says `UNSUPPORTED`, read each line:
+`fixable-in-recovery` means the operator can clear it (unmount `/metadata`, mount
+decrypted `/data`, shut Android down cleanly, expose a shell); `hard` means the
+layout itself cannot be split and this tool will not be able to help.
+
+A `Superblocks match: no` warning is normal after an unclean reboot: F2FS keeps
+two superblock copies and one may lag. The report names the active copy, and a
+plan records it so apply refuses if it changes. Only a mismatch with no valid
+F2FS copy in either block is a refusal.
 
 ### 3. Plan
 
@@ -229,17 +247,30 @@ QEMU_AARCH64=/path/to/qemu-aarch64 ./scripts/build.sh
 QEMU_AARCH64=/path/to/qemu-aarch64 ./tests/run_tests.sh
 ```
 
+Without an Android clang, build the helper from an Alpine aarch64 minirootfs
+through qemu-user:
+
+```sh
+ROOTFS=/path/to/alpine-aarch64-rootfs QEMU=/path/to/qemu-aarch64 \
+    ./scripts/build-helper-qemu.sh
+```
+
+That produces `out/partitioner`; the ZIPs are assembled by `scripts/build.sh`
+and the archive hashes are recorded in `dist/SHA256SUMS`.
+
 The offline suite uses synthetic fixtures and must never open a real block
 device. Example outputs are in [`examples/`](examples/), including the
 disclaimer that they came from a synthetic fixture.
 
 ## Known limitations
 
-- No Amethyst hardware validation has been performed.
-- The stock Amethyst GPT layout has not been confirmed here. The tool requires
-  `userdata` to be the last occupied partition, with `metadata` and every other
-  partition before it. If the phone has `metadata` or another partition after
-  `userdata`, inspect will report `UNSUPPORTED` and this tool will not split it.
+- Inspect has run on Amethyst hardware; Plan and Apply have not. No destructive
+  operation has touched a real device.
+- The Amethyst GPT layout is confirmed to be splittable in shape (`userdata` is
+  last, entry 34 is free), but an actual split has never been performed.
+- The Amethyst recovery kernel has not been shown to implement
+  `F2FS_IOC_RESIZE_FS`. The device's recovery is not TWRP and hides kallsyms, so
+  the capability probe is inconclusive; Apply's own ioctl is the real test.
 - Only single-device F2FS with 4096-byte blocks and one segment per section is
   supported; multi-device, zoned, Ext4, stacked dm and other layouts are
   rejected.
