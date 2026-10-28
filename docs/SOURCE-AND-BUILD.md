@@ -23,7 +23,10 @@ This directory is self-contained. Nothing here modifies the existing
 | `installer/README.txt.in` | In-ZIP readme |
 | `examples/` | Sample requests plus inspect/plan output from a synthetic fixture |
 | `tests/make_fixture.py` | Synthetic Amethyst-like GPT/F2FS/sysfs fixture |
+| `tests/corrupt_fixture.py` | Builds deliberately broken fixture variants for failure-path tests |
+| `tests/differential_upstream.py` | Compares this tool's plan with vendored upstream `gpt.py` |
 | `tests/run_tests.sh` | Offline test suite (no real block devices) |
+| `docs/COMPATIBILITY-REPORT.md` | Package, provenance, build and recovery compatibility report |
 | `tests/check_after.py` | Independent GPT/F2FS result checker for the fixture |
 | `tests/mock_reboot.py` | Simulates the post-reboot kernel partition view |
 | `scripts/build.sh` | Host binary, static helper and three ZIPs |

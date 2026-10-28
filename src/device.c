@@ -577,9 +577,34 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
 #ifdef UNIXNU_TESTING
     const char *fake = getenv("UNIXNU_TEST_FAKE_UNMOUNT");
     if (fake && !strcmp(fake, "1")) {
+        /* Remove only the /data mount so a surviving bind mount under /data is
+         * still visible, exactly as after a real umount(2) of /data. */
         char path[PATH_MAX];
-        if (mounts_path(p, path, sizeof(path)) == 0)
-            (void)write_text(path, "", 0644);
+        if (mounts_path(p, path, sizeof(path)) == 0) {
+            FILE *f = fopen(path, "r");
+            char kept[8192] = "";
+            size_t used = 0;
+            if (f) {
+                char line[1024];
+                while (fgets(line, sizeof(line), f)) {
+                    char copy[1024];
+                    snprintf(copy, sizeof(copy), "%s", line);
+                    char *save = NULL;
+                    char *source = strtok_r(copy, " \t\n", &save);
+                    char *target = strtok_r(NULL, " \t\n", &save);
+                    if (source && target && !strcmp(target, "/data"))
+                        continue;
+                    size_t len = strlen(line);
+                    if (used + len + 1 < sizeof(kept)) {
+                        memcpy(kept + used, line, len);
+                        used += len;
+                        kept[used] = '\0';
+                    }
+                }
+                fclose(f);
+            }
+            (void)write_text(path, kept, 0644);
+        }
     } else
 #endif
     {

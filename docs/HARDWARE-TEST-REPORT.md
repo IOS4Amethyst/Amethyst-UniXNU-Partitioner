@@ -6,7 +6,7 @@ Report date: 2026-10-28
 
 | Area | Result |
 | --- | --- |
-| Host build, self-test and offline fixture suite | **PASS** (84/84 checks) |
+| Host build, self-test and offline fixture suite | **PASS** (165/165 checks) |
 | Host ASan/UBSan self-test, inspect, plan and fake apply | **PASS** |
 | Amethyst hardware inspect | **NOT RUN** |
 | Amethyst hardware plan | **NOT RUN** |
@@ -72,19 +72,49 @@ The offline apply uses `UNIXNU_TEST_FAKE_SHRINK=1` and
 call the real ioctl or unmount a real filesystem. It proves control flow, gating,
 GPT image handling and independent consistency checks, not kernel behavior.
 
+## Upstream agreement and failure-path results
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Vendored upstream files match pinned revision `3ef9721` | PASS | SHA-256 manifest check |
+| Upstream `test_dual_sys.py` | PASS (12 tests) | run from `vendor/unixnu-dual_sys` |
+| Upstream `f2fs-shrink.c` self-test | PASS | prints `PASS: F2FS section rounding` |
+| Upstream `twrp.sh` parses | PASS | `sh -n` |
+| Plan equals upstream `gpt.py` for identical geometry | PASS | 23/23 checks, both GPT images byte-identical |
+| Plan agrees with upstream across 1–430 MiB | PASS | 0 disagreements, including matching refusals |
+| Corrupt primary/backup GPT header CRC | PASS | refuses, disk unchanged |
+| Mismatching primary and backup GPT | PASS | refuses, disk unchanged |
+| Missing protective MBR signature | PASS | refuses, disk unchanged |
+| Existing `unixnu` entry | PASS | refuses, disk unchanged |
+| No free GPT entry | PASS | refuses, disk unchanged |
+| `userdata` not the last occupied partition | PASS | refuses, disk unchanged |
+| Ext4 instead of F2FS | PASS | refuses, disk unchanged |
+| Unsupported F2FS block/segment/section geometry | PASS | refuses, disk unchanged |
+| Multi-device F2FS | PASS | refuses, disk unchanged |
+| F2FS block count larger than the partition | PASS | refuses, disk unchanged |
+| Surviving `/data` bind mount | PASS | apply stops at `f2fs-verified`, GPT untouched |
+| Injected F2FS resize failure | PASS | stage `f2fs-shrink-started`, GPT untouched, no retry |
+| Injected backup GPT write failure | PASS | stage `gpt-backup-writing`, GPT untouched, no retry |
+| Injected backup GPT readback failure | PASS | stage `gpt-backup-writing`, no retry |
+| Injected primary GPT write failure | PASS | stage `gpt-primary-writing`, no retry |
+| Shipped helper contains no test hooks | PASS | `strings` check |
+
 ## Artifact hashes
 
 Built artifacts for this report:
 
 ```
-b0bae5bbed86e23ae6ed3b46a46fc449ebcbbf1fe1e845b1ed4d2187e63cfa7b  Amethyst-UniXNU-Partitioner-Apply.zip
-9b39d403bc0dd3b70986b33d5e891f0fe5321c903982ab1c7e8bf7eb3bfb4080  Amethyst-UniXNU-Partitioner-Inspect.zip
-73fd4a36d20ba57938ebb729d8a5105b2e2eb0a19eedca7901ac3c17d29ccbfa  Amethyst-UniXNU-Partitioner-Plan.zip
-bb3fcbb793bf85a7380091f5fcb283f3c5a14c3ae6f99b7881ee028e6c9e6274  bin/partitioner (helper inside each ZIP)
+e3c20a7aba3a7e82a9345bf8b266d9e0dec3ae6eaf325b8bf7bc48a1410cf7a7  Amethyst-UniXNU-Partitioner-Apply.zip
+dd714c55a77975845480fcb9a03637d209b9424c29808f97afcb8215c7152855  Amethyst-UniXNU-Partitioner-Inspect.zip
+f251210996272b70239edaefba47bfcfd44eb5a5582327724e2bf6614ec83be5  Amethyst-UniXNU-Partitioner-Plan.zip
+b391c6d5ef6274a2ce9c0f565b6eaa5ac45b024a5ccbbb1b0b95894ac2d0a33c  bin/partitioner (helper inside each ZIP)
 ```
 
-`dist/SHA256SUMS` is authoritative for distributed copies. Rebuilding changes
-the ZIP hashes; do not mix a plan bundle with a different helper version.
+The helper hash is reproducible. The ZIP hashes are not: ZIP entry timestamps
+vary between builds, so a rebuild produces different archive bytes with
+identical contents. Compare the helper hash, and `dist/SHA256SUMS` for the
+archives you actually distribute. Do not mix a plan bundle with a different
+helper version.
 
 ## What must still be tested on hardware
 
@@ -151,5 +181,5 @@ QEMU_AARCH64=/path/to/qemu-aarch64 ./scripts/build.sh
 QEMU_AARCH64=/path/to/qemu-aarch64 ./tests/run_tests.sh
 ```
 
-Expected final line: `TESTS: 84 passed, 0 failed`. This count covers the offline
+Expected final line: `TESTS: 165 passed, 0 failed`. This count covers the offline
 suite only and is not evidence of hardware success.

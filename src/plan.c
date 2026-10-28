@@ -240,14 +240,17 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
             return failf(err, errlen, "remaining userdata is too small for F2FS section rounding");
         }
         expected = f2fs_expected_blocks(s.fs.blocks, request);
-        if (s.fs.blocks - request >= s.fs.f_bavail) {
+        /* Capture before state_free: failf formats s.fs after the state is gone. */
+        uint64_t needed = s.fs.blocks - request;
+        uint64_t available = s.fs.f_bavail;
+        if (needed >= available) {
             free(primary);
             free(backup);
             state_free(&s);
             return failf(err, errlen,
                          "not enough free F2FS space: need %" PRIu64 " blocks, only %" PRIu64
                          " are available to the filesystem",
-                         s.fs.blocks - request, s.fs.f_bavail);
+                         needed, available);
         }
     }
     if (expected * F2FS_BLOCK_BYTES > layout.new_userdata_bytes) {

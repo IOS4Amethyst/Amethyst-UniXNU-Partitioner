@@ -4,6 +4,16 @@
 #include "common.h"
 #include <sys/mount.h>
 
+#ifdef UNIXNU_TESTING
+/* Host-only failure injection for the offline suite. These are compiled out of
+ * the shipped helper, which is always built without -DUNIXNU_TESTING. */
+static int test_inject(const char *name)
+{
+    const char *v = getenv(name);
+    return v && *v && strcmp(v, "0");
+}
+#endif
+
 static int pwrite_all(int fd, const uint8_t *buf, size_t len, off_t off)
 {
     size_t done = 0;
@@ -432,6 +442,15 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
 
     plan_write_stage(plan_dir, "gpt-backup-writing", err, errlen);
     sync();
+#ifdef UNIXNU_TESTING
+    if (test_inject("UNIXNU_TEST_FAIL_BACKUP_WRITE")) {
+        errno = EIO;
+        fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
+                   "backup GPT write failed: %s; do not reboot", strerror(errno));
+        close(disk_fd);
+        goto fail;
+    }
+#endif
     if (pwrite_all(disk_fd, backup_after, bal, backup_off) < 0) {
         fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
                    "backup GPT write failed: %s; do not reboot", strerror(errno));
@@ -440,7 +459,11 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
     }
     uint8_t *verify = xmalloc(bal);
     if (pread_all(disk_fd, verify, bal, backup_off) < 0 ||
-        memcmp(verify, backup_after, bal)) {
+        memcmp(verify, backup_after, bal)
+#ifdef UNIXNU_TESTING
+        || test_inject("UNIXNU_TEST_FAIL_BACKUP_READBACK")
+#endif
+    ) {
         free(verify);
         fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
                    "backup GPT readback failed; do not reboot");
@@ -452,6 +475,15 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
 
     plan_write_stage(plan_dir, "gpt-primary-writing", err, errlen);
     sync();
+#ifdef UNIXNU_TESTING
+    if (test_inject("UNIXNU_TEST_FAIL_PRIMARY_WRITE")) {
+        errno = EIO;
+        fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
+                   "primary GPT write failed: %s; do not reboot", strerror(errno));
+        close(disk_fd);
+        goto fail;
+    }
+#endif
     if (pwrite_all(disk_fd, primary_after, pal, 0) < 0) {
         fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
                    "primary GPT write failed: %s; do not reboot", strerror(errno));

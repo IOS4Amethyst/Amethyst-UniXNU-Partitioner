@@ -7,7 +7,8 @@ the existing Android `userdata` partition on the Xiaomi Redmi Note 14 Pro+ 5G
 **Status: software-tested only. It has not been run on Amethyst hardware.**
 Do not treat it as production-ready, and do not assume the split preserves data
 until a full hardware test with independent backups has passed. See
-[`docs/HARDWARE-TEST-REPORT.md`](docs/HARDWARE-TEST-REPORT.md).
+[`docs/HARDWARE-TEST-REPORT.md`](docs/HARDWARE-TEST-REPORT.md) and
+[`docs/COMPATIBILITY-REPORT.md`](docs/COMPATIBILITY-REPORT.md).
 
 The tool never installs an OS, never formats `unixnu`, and never writes boot
 images. It only shrinks F2FS online and rewrites the two GPT copies after a

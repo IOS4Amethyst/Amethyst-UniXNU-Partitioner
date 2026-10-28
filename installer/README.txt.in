@@ -7,6 +7,13 @@ small recovery shell entry point. It never downloads anything.
 Read the project README and docs/HARDWARE-TEST-REPORT.md before using it.
 The project has NOT been validated on Amethyst hardware.
 
+Requests
+  samples/request-plan.conf and samples/request-apply.conf in this ZIP are
+  templates. Copy the appropriate one to
+      /sdcard/Amethyst-UniXNU-Partitioner/request.conf
+  and replace every placeholder. (In the project repository these templates
+  live under examples/, but inside this ZIP they are packaged as samples/.)
+
 Inspect ZIP
   Reads the current state and writes inspect-*.txt and inspect-*.json under
   /sdcard/Amethyst-UniXNU-Partitioner/. It performs no partition or filesystem

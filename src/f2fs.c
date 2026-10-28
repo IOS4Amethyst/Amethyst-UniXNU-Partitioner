@@ -230,6 +230,12 @@ int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *inf
 #ifdef UNIXNU_TESTING
     {
         const char *fake = getenv("UNIXNU_TEST_FAKE_SHRINK");
+        const char *failing = getenv("UNIXNU_TEST_FAIL_SHRINK");
+        if (failing && *failing && strcmp(failing, "0")) {
+            /* The ioctl ran but the kernel refused it: the GPT must not move. */
+            return failf(err, errlen, "F2FS_IOC_RESIZE_FS failed: %s",
+                         strerror(EIO));
+        }
         if (fake && !strcmp(fake, "1")) {
             uint8_t le[8];
             for (int i = 0; i < 8; i++)

@@ -70,6 +70,42 @@ if [ ! -d "$FIX/dev/block" ]; then
 fi
 sha256sum "$FIX/dev/block/sda" "$FIX/dev/block/sda3" "$FIX/dev/block/sda2" >"$WORK/pristine.sha"
 
+echo '== upstream reference (vendored, unmodified) =='
+# The reference implementation is the source of truth for layout and F2FS
+# math. Run its own suite and helper self-test, then prove this tool produces
+# the same geometry and GPT bytes for identical input.
+VENDOR=vendor/unixnu-dual_sys
+PINNED_SHA256=(
+    '8e4a756951f691849a4c95d0a775d26cdafaa9dd638aeb8b417425ce74b91aa7  f2fs-shrink.c'
+    'd0864fd6f7caf3ffa54d9a52ab93e3eb1a2a4a02c5263ee2119be71f37d33498  gpt.py'
+    '4f5686539ba3f88276efc7c0f2b72e190e70f05d4ec0884ad0618732845b7d9a  partition.py'
+    '29f2de54c0a9e2122ddb84d3d510f704c001adee7ff93b1916cccda17cef903c  test_dual_sys.py'
+    'f51641521a6fe88d024b98c8f75aa49e157cff54b85a8d888c110f29349ae5d0  twrp.sh'
+)
+printf '%s\n' "${PINNED_SHA256[@]}" >"$WORK/vendor.sha"
+if (cd "$VENDOR" && sha256sum -c "$WORK/vendor.sha" >/dev/null 2>&1); then
+    ok 'vendored upstream files match the pinned upstream revision'
+else
+    bad 'vendored upstream files match the pinned upstream revision'
+    (cd "$VENDOR" && sha256sum -c "$WORK/vendor.sha") 2>&1 | sed 's/^/    /'
+fi
+if python3 --version >/dev/null 2>&1; then
+    expect_ok 'upstream test_dual_sys.py passes' bash -c \
+        'cd vendor/unixnu-dual_sys && python3 test_dual_sys.py'
+    expect_ok 'upstream f2fs-shrink self-test builds' \
+        cc -O2 -Wall -Wextra -Werror vendor/unixnu-dual_sys/f2fs-shrink.c \
+        -o "$WORK/f2fs-shrink-test"
+    expect_ok 'upstream f2fs-shrink self-test passes' \
+        "$WORK/f2fs-shrink-test" self-test
+    expect_contains 'upstream self-test prints PASS' \
+        "$WORK/cmd.out" 'PASS: F2FS section rounding'
+    expect_ok 'upstream twrp.sh parses' sh -n vendor/unixnu-dual_sys/twrp.sh
+    expect_ok 'differential plan matches upstream at 64 MiB' \
+        python3 tests/differential_upstream.py "$FIX" $((64 * 1024 * 1024))
+else
+    skip 'python3 unavailable; upstream differential tests skipped'
+fi
+
 echo '== read-only inspect =='
 expect_ok 'inspect runs on supported layout' \
     fixture_env "$HOST" inspect --root "$FIX" --identity /identity.conf \
@@ -182,6 +218,184 @@ else
     bad 'all apply refusals left disk, userdata and metadata unchanged'
 fi
 
+echo '== corrupted fixtures: inspect must report, plan/apply must refuse =='
+# Build each variant from the pristine fixture, then require the exact refusal
+# that variant is meant to exercise. None of these touch a real block device.
+cfixture() {
+    local name=$1 mode=$2 want=$3
+    local dir="$WORK/corrupt/$name"
+    if ! python3 tests/corrupt_fixture.py "$FIX" "$dir" "$mode" >"$WORK/cmd.out" 2>&1; then
+        bad "corrupt fixture builds: $name"
+        tail -5 "$WORK/cmd.out" | sed 's/^/    /'
+        return
+    fi
+    ok "corrupt fixture builds: $name"
+    local before after
+    before=$(sha256sum "$dir/dev/block/sda" "$dir/dev/block/sda3" "$dir/dev/block/sda2" \
+        | sha256sum)
+    mkdir -p "$dir/reports" "$dir/plans"
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/c\n' \
+        >"$dir/plans/request.conf"
+
+    UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" inspect --root "$dir" \
+        --identity /identity.conf --out /reports/i.txt >"$WORK/cmd.out" 2>&1
+    if grep -Fq 'RESULT: UNSUPPORTED' "$dir/reports/i.txt"; then
+        ok "inspect reports UNSUPPORTED: $name"
+    else
+        bad "inspect reports UNSUPPORTED: $name"
+    fi
+
+    if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
+        --identity /identity.conf --request /plans/request.conf \
+        >"$WORK/cmd.out" 2>&1; then
+        bad "plan refuses: $name (unexpected success)"
+    elif grep -Fq -- "$want" "$WORK/cmd.out"; then
+        ok "plan refuses with '$want': $name"
+    else
+        bad "plan refuses with '$want': $name"
+        grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+    fi
+
+    after=$(sha256sum "$dir/dev/block/sda" "$dir/dev/block/sda3" "$dir/dev/block/sda2" \
+        | sha256sum)
+    if [ "$before" = "$after" ]; then
+        ok "corrupted fixture left unchanged: $name"
+    else
+        bad "corrupted fixture left unchanged: $name"
+    fi
+}
+
+cfixture primary-crc primary-crc 'GPT header CRC mismatch'
+cfixture backup-crc backup-crc 'GPT header CRC mismatch'
+cfixture primary-table primary-table 'primary and backup GPT headers disagree'
+cfixture backup-disagree backup-disagree 'primary and backup GPT headers disagree'
+cfixture mbr-missing mbr-missing 'missing protective MBR signature'
+cfixture add-unixnu add-unixnu 'unixnu already exists'
+cfixture fill-entries fill-entries 'no unused GPT entry is available'
+cfixture userdata-not-last userdata-not-last 'userdata is not the last occupied partition'
+cfixture f2fs-ext4 f2fs-ext4 'userdata is not F2FS'
+cfixture f2fs-bad-block f2fs-bad-block 'unsupported F2FS block size'
+cfixture f2fs-bad-seg f2fs-bad-seg 'unsupported F2FS segment size'
+cfixture f2fs-multi-seg f2fs-multi-seg 'unsupported F2FS sections'
+cfixture f2fs-multi-dev f2fs-multi-dev 'multi-device F2FS is unsupported'
+cfixture f2fs-oversize f2fs-oversize 'exceeds the userdata partition'
+
+echo '== busy userdata: apply must stop before writing GPT =='
+# A bind mount of the decrypted device survives the /data unmount. Apply must
+# notice it and stop with the GPT untouched.
+BUSY="$WORK/corrupt/busy"
+if python3 tests/corrupt_fixture.py "$FIX" "$BUSY" busy-bind >"$WORK/cmd.out" 2>&1; then
+    mkdir -p "$BUSY/plans"
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/busy\n' \
+        >"$BUSY/plans/req.conf"
+    if UNIXNU_TEST_STATFS="$BUSY/fixtures/statfs" "$HOST" plan --root "$BUSY" \
+        --identity /identity.conf --request /plans/req.conf >"$WORK/cmd.out" 2>&1; then
+        ok 'busy fixture: planning still succeeds'
+        busy_confirm=$(sed -n 's/^confirm=//p' "$BUSY/plans/busy/plan.conf")
+        printf 'mode = apply\nplan = /plans/busy\nconfirm = %s\nacknowledge_data_loss = yes\n' \
+            "$busy_confirm" >"$BUSY/plans/apply.conf"
+        if env UNIXNU_TEST_STATFS="$BUSY/fixtures/statfs" UNIXNU_TEST_FAKE_SHRINK=1 \
+            UNIXNU_TEST_FAKE_UNMOUNT=1 "$HOST" apply --root "$BUSY" \
+            --identity /identity.conf --request /plans/apply.conf \
+            >"$WORK/cmd.out" 2>&1; then
+            bad 'apply refuses a surviving /data bind mount (unexpected success)'
+        elif grep -Fq 'still provides userdata or a bind mount' "$WORK/cmd.out"; then
+            ok 'apply refuses a surviving /data bind mount'
+        else
+            bad 'apply refuses a surviving /data bind mount'
+            grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+        fi
+        expect_contains 'apply stopped before writing the GPT' "$BUSY/plans/busy/stage" \
+            'f2fs-verified'
+    else
+        bad 'busy fixture: planning still succeeds'
+        grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+    fi
+else
+    bad 'busy fixture builds'
+fi
+
+
+echo '== injected failures: shrink, GPT write, readback =='
+# Each scenario starts from its own pristine fixture so a partially written GPT
+# in one case cannot mask another. Injections exist only in the host binary.
+inject_case() {
+    local name=$1 env_name=$2 env_value=$3 want_stage=$4 want_msg=$5
+    local dir="$WORK/inject/$name"
+    rm -rf "$dir"
+    if ! python3 tests/make_fixture.py "$dir" >"$WORK/cmd.out" 2>&1; then
+        bad "injection fixture builds: $name"
+        return
+    fi
+    mkdir -p "$dir/plans"
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/inj\n' >"$dir/plans/req.conf"
+    if ! UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
+        --identity /identity.conf --request /plans/req.conf >"$WORK/cmd.out" 2>&1; then
+        bad "injection plan builds: $name"
+        tail -5 "$WORK/cmd.out" | sed 's/^/    /'
+        return
+    fi
+    local confirm
+    confirm=$(sed -n 's/^confirm=//p' "$dir/plans/inj/plan.conf")
+    printf 'mode = apply\nplan = /plans/inj\nconfirm = %s\nacknowledge_data_loss = yes\n' \
+        "$confirm" >"$dir/plans/apply.conf"
+
+    local before
+    before=$(sha256sum "$dir/dev/block/sda" | cut -d' ' -f1)
+    if env UNIXNU_TEST_STATFS="$dir/fixtures/statfs" UNIXNU_TEST_FAKE_SHRINK=1 \
+        UNIXNU_TEST_FAKE_UNMOUNT=1 "$env_name"=1 "$HOST" apply --root "$dir" \
+        --identity /identity.conf --request /plans/apply.conf >"$WORK/cmd.out" 2>&1; then
+        bad "injected failure stops apply: $name (unexpected success)"
+    elif grep -Fq -- "$want_msg" "$WORK/cmd.out"; then
+        ok "injected failure reports '$want_msg': $name"
+    else
+        bad "injected failure reports '$want_msg': $name"
+        grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+    fi
+    if [ "$want_stage" = "$(cat "$dir/plans/inj/stage")" ]; then
+        ok "injected failure persists stage $want_stage: $name"
+    else
+        bad "injected failure persists stage $want_stage: $name"
+    fi
+    # No automatic retry: the same bundle must refuse on a second attempt.
+    if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" apply --root "$dir" \
+        --identity /identity.conf --request /plans/apply.conf >"$WORK/cmd.out" 2>&1; then
+        bad "injected failure is not retried automatically: $name"
+    elif grep -Fq 'do not retry, run recover' "$WORK/cmd.out"; then
+        ok "injected failure is not retried automatically: $name"
+    else
+        bad "injected failure is not retried automatically: $name"
+        grep -m1 STOP "$WORK/cmd.out" | sed 's/^/    /'
+    fi
+    # A failure before any GPT byte is written must leave the table untouched.
+    # A readback failure happens after its write, so the table has changed by
+    # then and that is expected; the stage record is what protects the user.
+    case "$want_stage" in
+        f2fs-shrink-started|gpt-backup-writing)
+            if [ "$want_msg" = 'backup GPT readback failed' ]; then
+                if [ "$before" != "$(sha256sum "$dir/dev/block/sda" | cut -d' ' -f1)" ]; then
+                    ok "injected readback failure reports a written backup: $name"
+                else
+                    bad "injected readback failure reports a written backup: $name"
+                fi
+            elif [ "$before" = "$(sha256sum "$dir/dev/block/sda" | cut -d' ' -f1)" ]; then
+                ok "injected failure left the GPT untouched: $name"
+            else
+                bad "injected failure left the GPT untouched: $name"
+            fi
+            ;;
+    esac
+}
+
+inject_case shrink-failure UNIXNU_TEST_FAIL_SHRINK 1 \
+    'f2fs-shrink-started' 'F2FS resize failed'
+inject_case backup-write UNIXNU_TEST_FAIL_BACKUP_WRITE 1 \
+    'gpt-backup-writing' 'backup GPT write failed'
+inject_case backup-readback UNIXNU_TEST_FAIL_BACKUP_READBACK 1 \
+    'gpt-backup-writing' 'backup GPT readback failed'
+inject_case primary-write UNIXNU_TEST_FAIL_PRIMARY_WRITE 1 \
+    'gpt-primary-writing' 'primary GPT write failed'
+
 echo '== authorized destructive apply (offline fake shrink) =='
 cat >"$FIX/plans/apply.conf" <<EOF
 mode = apply
@@ -253,6 +467,16 @@ if [ -x out/partitioner ]; then
         bad 'helper is static (no PT_INTERP)'
     else
         ok 'helper is static (no PT_INTERP)'
+    fi
+    # The shipped helper must never contain the offline test hooks.
+    if command -v strings >/dev/null 2>&1; then
+        if [ "$(strings out/partitioner | grep -c 'UNIXNU_TEST_')" -eq 0 ]; then
+            ok 'shipped helper contains no UNIXNU_TEST_ hooks'
+        else
+            bad 'shipped helper contains no UNIXNU_TEST_ hooks'
+        fi
+    else
+        skip 'strings is not available'
     fi
     if [ -z "${QEMU_AARCH64:-}" ] && [ -x /tmp/opencode/qemupkg/usr/bin/qemu-aarch64 ]; then
         QEMU_AARCH64=/tmp/opencode/qemupkg/usr/bin/qemu-aarch64
