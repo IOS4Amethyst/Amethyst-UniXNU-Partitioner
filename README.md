@@ -158,6 +158,30 @@ Then boot Android and confirm `userdata` still mounts and files are intact.
 Create and test the UniXNU filesystem separately; that is outside this tool's
 scope.
 
+## Before you touch `unixnu`
+
+This tool only adds the GPT entry. Two things on the UniXNU side cause data loss
+if you skip them:
+
+- **`unixnu` is not empty.** It is the tail of the old `userdata` partition and
+  still contains whatever userdata bytes were there. It holds no valid
+  filesystem, and it is not a copy of your files. Format it before use, and do
+  not treat its contents as a backup.
+- **Build and flash commands may still target `userdata`.** A device config that
+  was written before the split can still name Android's `userdata` as its output
+  or install target. If you write a UniXNU image to `userdata`, you destroy
+  Android data. Check the target device path (`/dev/block/by-name/unixnu`, not
+  `.../userdata`) before every flash, and confirm it against
+  `readlink -f /dev/block/by-name/unixnu` in recovery.
+
+A GPT backup cannot restore file contents, and restoring the old GPT cannot undo
+the F2FS shrink. A full userdata restore needs the original partition capacity
+plus a matching `metadata` backup.
+
+If apply is interrupted, do not delete the session file to rerun it and do not
+format unreadable `/data`. Save the stage log and the kernel log (`dmesg`) first,
+then have the device maintainer assess the captured state.
+
 ## Refusals and safety rules
 
 Apply refuses, without writing to the disk, when any of these fail:
