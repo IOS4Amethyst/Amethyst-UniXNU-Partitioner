@@ -1,0 +1,114 @@
+Amethyst UniXNU Partitioner - read-only inspect
+Tool: amethyst-unixnu-partitioner 0.1.0
+Generated: 2026-10-28T02:11:44Z
+
+== Device identity ==
+Device                      : amethyst
+Model                       : Fixture Amethyst
+Hardware serial             : FIXTURESERIAL
+Recovery                    : twrp 3.7.0-fixture
+Kernel                      : 6.6.0-fixture
+Architecture                : aarch64
+Device-tree model           : Xiaomi amethyst
+Android boot completed      : no
+USB config                  : (not reported)
+USB state                   : (not reported)
+
+== Storage and partition geometry ==
+Storage device              : /dev/block/sda
+Logical sector size         : 4096 bytes
+Physical sector size        : 4096 bytes
+Disk size                   : 536870912 bytes
+Total logical sectors       : 131072
+userdata by-name            : /dev/block/sda3
+userdata index              : 3
+userdata start LBA          : 2048
+userdata end LBA            : 131066
+userdata size               : 528461824 bytes
+metadata by-name            : /dev/block/sda2
+metadata index              : 2
+metadata start LBA          : 64
+metadata end LBA            : 127
+metadata size               : 262144 bytes
+Disk serial                 : FIXTURESERIAL
+
+== Mounts and mappings ==
+Target                       Source                   Type       Options
+/data                        /dev/block/dm-0          f2fs       rw,seclabel,checkpoint=enable [DATA] [USERDATA]
+Decrypted /data mapping     : /dev/block/dm-0
+userdata raw device         : /dev/block/sda3
+metadata device             : /dev/block/sda2
+metadata mounted            : no
+
+== Filesystem ==
+Type                        : F2FS
+Mounted                     : yes
+Mounted source              : /dev/block/dm-0
+statfs blocks               : 128000
+statfs free blocks          : 110000
+statfs available blocks     : 100000
+Block size                  : 4096
+Blocks per segment          : 512
+Segments per section        : 1
+Section blocks              : 512
+Block count                 : 128000
+Section count               : 250
+Segment count               : 250
+Main segments               : 246
+UUID                        : 12345678-1234-4234-8234-123456789abc
+Volume name                 : fixture-userdata
+Features                    : 0x00000000
+Checkpoint copies match     : yes
+Checkpoint version          : 7
+Checkpoint flags            : 0x00000000
+Checkpoint user blocks      : 123904
+Checkpoint valid blocks     : 1000
+Checkpoint free segments    : 246
+Superblock SHA-256          : be3f88e8232972dbe96ffc7b933d2e7f498e665b4638b3c70df04c43840f070e
+
+== GPT ==
+Disk GUID                   : 11529365-8d60-a8e2-0bcb-b9cc612bb7d2
+Entries                     : 3 of 32 (entry size 128)
+Entry table blocks          : 4
+Usable LBA range            : 6..131066
+Primary header CRC          : 0xc3d8d8aa
+Backup header CRC           : 0x19c5af3d
+Entry array CRC             : 0x9b3b82e8
+Primary region SHA-256      : 4757ffd0b870193fc4b0cf1e8bdcd228b5b73a6d30c256e0fc073d46999b2453
+Backup region SHA-256       : 7b4f5168d4e1e7d03dff0656ecfa9e7cfb3dd78062bdbb32aa2502d80e5da642
+
+Index  Name                          First LBA       Last LBA           Size  Type GUID
+    1  boot                                  6             63      0.227 MiB  2c86e742-745e-4fdd-bfd8-b6a7ac638772
+    2  metadata                             64            127      0.250 MiB  82acc91f-357c-4a68-9c8f-689e1b1a23a1
+       unique GUID 82acc91f-357c-4a68-9c8f-689e1b1a23a1, attributes 0x0000000000000000
+    3  userdata                           2048         131066    503.980 MiB  0fc63daf-8483-4772-8e79-3d69d8477de4
+       unique GUID 6a4afef7-0d3f-453a-8a48-6373f67ffff0, attributes 0x0000000000000000
+
+== Recovery kernel capability checks ==
+f2fs listed                 : yes
+f2fs sysfs                  : yes
+F2FS ioctl namespace        : unknown
+GET_FEATURES ioctl          : no/unknown
+resize symbol in kallsyms   : yes
+Kernel version check        : pass
+Read-only capability verdict: available
+Details                     : f2fs_filesystem=1 sysfs=1 getfeatures=0 resize_symbol=1 kernel_ok=1
+
+== Layout checks ==
+userdata is last occupied   : yes
+userdata start alignment    : 4096-byte aligned
+unixnu exists               : no
+Unused GPT entry            : available
+First unused entry          : 4
+Current userdata range      : 528461824 bytes
+Current F2FS blocks         : 128000 (524288000 bytes)
+
+== Warnings and unsupported conditions ==
+None.
+
+== Verdict ==
+RESULT: SUPPORTED
+
+DATA-LOSS WARNING: GPT and filesystem operations can destroy data. This inspect
+report is read-only. A GPT backup does not contain file contents, and restoring an
+old GPT cannot reverse a failed F2FS shrink. Keep an independent backup.

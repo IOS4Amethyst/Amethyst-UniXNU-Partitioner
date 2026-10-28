@@ -1,0 +1,201 @@
+#!/sbin/sh
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+# Amethyst UniXNU Partitioner - @ZIP_MODE@ ZIP entry point.
+#
+# This script is the only recovery-side shell code. It verifies a statically
+# linked AArch64 helper and runs it. It never downloads anything and never
+# edits the partition table by itself.
+set -eu
+umask 022
+
+MODE='@ZIP_MODE@'
+EXPECTED_HELPER_SHA256='@HELPER_SHA256@'
+BASE='/sdcard/Amethyst-UniXNU-Partitioner'
+
+OUTFD="${2:-}"
+case "$OUTFD" in
+    ''|*[!0-9]*) OUTFD='' ;;
+esac
+if [ -n "$OUTFD" ]; then
+    eval "exec 4>&$OUTFD" 2>/dev/null || OUTFD=''
+fi
+
+ui_out() {
+    if [ -n "$OUTFD" ]; then
+        printf 'ui_print %s\nui_print\n' "$*" >&4 2>/dev/null || true
+    fi
+}
+log() {
+    printf '%s\n' "$*"
+    ui_out "$*"
+}
+stop() {
+    log "STOP: $*"
+    printf 'STOP: %s\n' "$*" >&2
+    exit 1
+}
+
+[ "$(id -u)" = 0 ] || stop 'root recovery is required'
+[ "$(getprop sys.boot_completed 2>/dev/null || true)" != 1 ] || \
+    stop 'Android is running; boot recovery first'
+if [ -z "$(getprop ro.twrp.version 2>/dev/null || true)" ] && \
+   [ ! -x /sbin/recovery ] && [ ! -x /system/bin/recovery ]; then
+    stop 'a TWRP-like recovery environment is required'
+fi
+case "$(uname -m)" in
+    aarch64|arm64) ;;
+    *) stop "unsupported architecture $(uname -m); this helper is AArch64 only" ;;
+esac
+for command in awk cp chmod cut dirname grep mkdir od rm sha256sum tr uname; do
+    command -v "$command" >/dev/null 2>&1 || stop "missing required command: $command"
+done
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || stop 'cannot locate the installer directory'
+ROOT=$(CDPATH= cd -- "$HERE/../../.." 2>/dev/null && pwd || true)
+HELPER=''
+if [ -n "$ROOT" ] && [ -f "$ROOT/bin/partitioner" ]; then
+    HELPER="$ROOT/bin/partitioner"
+elif [ -f "$HERE/bin/partitioner" ]; then
+    HELPER="$HERE/bin/partitioner"
+else
+    ZIPFILE_ARG="${3:-${ZIPFILE:-}}"
+    if [ -n "$ZIPFILE_ARG" ] && [ -f "$ZIPFILE_ARG" ]; then
+        command -v unzip >/dev/null 2>&1 || stop 'cannot find the payload and unzip is missing'
+        TMPEXTRACT="${TMPDIR:-/tmp}/unixnu-extract.$$"
+        mkdir -p "$TMPEXTRACT" || stop 'cannot create a temporary directory'
+        unzip -o -q "$ZIPFILE_ARG" 'bin/partitioner' -d "$TMPEXTRACT" || \
+            stop 'cannot extract bin/partitioner from the ZIP'
+        HELPER="$TMPEXTRACT/bin/partitioner"
+    fi
+fi
+[ -n "$HELPER" ] && [ -f "$HELPER" ] || stop 'bin/partitioner is missing from the ZIP'
+
+RUN="${TMPDIR:-/tmp}/unixnu-partitioner.$$"
+rm -rf "$RUN"
+mkdir -p "$RUN" || stop 'cannot create a temporary working directory'
+trap 'rm -rf "$RUN"' EXIT INT TERM
+cp "$HELPER" "$RUN/partitioner" || stop 'cannot copy the helper into RAM'
+chmod 700 "$RUN/partitioner" || stop 'cannot make the helper executable'
+
+# ELF64, little-endian, AArch64. The integrity hash is the primary guarantee;
+# these checks catch an accidentally wrong artifact before it is executed.
+[ "$(od -An -tu1 -j4 -N1 "$RUN/partitioner" | tr -d ' \n')" = '2' ] || \
+    stop 'helper is not ELF64'
+[ "$(od -An -tx1 -j18 -N2 "$RUN/partitioner" | tr -d ' \n')" = 'b700' ] || \
+    stop 'helper is not an AArch64 executable'
+ACTUAL_HELPER_SHA256=$(sha256sum "$RUN/partitioner" | cut -d' ' -f1)
+[ "$ACTUAL_HELPER_SHA256" = "$EXPECTED_HELPER_SHA256" ] || \
+    stop 'helper integrity check failed; rebuild or re-download the ZIP'
+log 'Experimental software: this has not been validated on Amethyst hardware.'
+log 'Keep an independent userdata/metadata backup before applying.'
+
+mkdir -p "$BASE" || stop "cannot create $BASE"
+IDENT="$RUN/identity.conf"
+{
+    printf 'device=%s\n' "$(getprop ro.product.device 2>/dev/null || true)"
+    printf 'model=%s\n' "$(getprop ro.product.model 2>/dev/null || true)"
+    serial=$(getprop ro.serialno 2>/dev/null || true)
+    [ -n "$serial" ] || serial=$(getprop ro.boot.serialno 2>/dev/null || true)
+    printf 'serial=%s\n' "$serial"
+    twrp=$(getprop ro.twrp.version 2>/dev/null || true)
+    if [ -n "$twrp" ]; then
+        printf 'recovery=twrp\n'
+        printf 'twrp=%s\n' "$twrp"
+    else
+        printf 'recovery=recovery\n'
+    fi
+    printf 'kernel=%s\n' "$(uname -r)"
+    printf 'machine=%s\n' "$(uname -m)"
+    printf 'boot_completed=%s\n' "$(getprop sys.boot_completed 2>/dev/null || echo 0)"
+    dt=$(tr -d '\000' </proc/device-tree/model 2>/dev/null || true)
+    printf 'dt_model=%s\n' "$dt"
+    printf 'usb_config=%s\n' "$(getprop sys.usb.config 2>/dev/null || true)"
+    printf 'usb_state=%s\n' "$(getprop sys.usb.state 2>/dev/null || true)"
+} >"$IDENT" || stop 'cannot write the identity file'
+
+run_helper() {
+    log "Running: $*"
+    if "$@" >"$RUN/last.log" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    while IFS= read -r line; do
+        log "$line"
+    done <"$RUN/last.log"
+    return $rc
+}
+
+req_get() {
+    awk -v want="$1" '
+        {
+            line=$0
+            sub(/\r$/, "", line)
+            if (line ~ /^[ \t]*#/) next
+            eq=index(line, "=")
+            if (!eq) next
+            key=substr(line, 1, eq-1)
+            gsub(/^[ \t]+|[ \t]+$/, "", key)
+            if (key != want) next
+            value=substr(line, eq+1)
+            gsub(/^[ \t]+|[ \t]+$/, "", value)
+            found=value
+        }
+        END { print found }' "$2"
+}
+
+case "$MODE" in
+    inspect)
+        log 'Read-only inspect: no partition or filesystem writes will be attempted.'
+        run_helper "$RUN/partitioner" inspect --identity "$IDENT" --base "$BASE" || \
+            stop 'inspect failed; see the message above'
+        log "Inspect report directory: $BASE"
+        ;;
+    plan)
+        REQUEST="$BASE/request.conf"
+        [ -f "$REQUEST" ] || stop "missing $REQUEST; create it from examples/request-plan.conf"
+        grep -Eq '[[:space:]]/data[[:space:]]+f2fs[[:space:]]' /proc/mounts || \
+            stop 'mount decrypted /data read-write before planning'
+        run_helper "$RUN/partitioner" plan --identity "$IDENT" --request "$REQUEST" || \
+            stop 'plan refused or failed; no partition table writes were made'
+        ;;
+    apply)
+        REQUEST="$BASE/request.conf"
+        [ -f "$REQUEST" ] || stop "missing $REQUEST; create it from examples/request-apply.conf"
+        ACTION=$(req_get mode "$REQUEST")
+        PLAN=$(req_get plan "$REQUEST")
+        case "${ACTION:-apply}" in
+            apply)
+                grep -Eq '[[:space:]]/data[[:space:]]+f2fs[[:space:]]' /proc/mounts || \
+                    stop 'mount decrypted /data read-write before applying'
+                log 'Apply is destructive. It runs only with a device-matched plan, the exact'
+                log 'confirmation phrase and acknowledge_data_loss = yes in the request file.'
+                if ! run_helper "$RUN/partitioner" apply --identity "$IDENT" --request "$REQUEST"; then
+                    if [ -n "$PLAN" ]; then
+                        log 'Read-only recovery summary follows. No retry was attempted.'
+                        run_helper "$RUN/partitioner" recover --plan "$PLAN" || true
+                    fi
+                    stop 'apply stopped; keep this recovery session and inspect the plan bundle'
+                fi
+                ;;
+            verify)
+                [ -n "$PLAN" ] || stop 'mode = verify requires plan = <bundle directory>'
+                run_helper "$RUN/partitioner" verify --plan "$PLAN" || \
+                    stop 'verify failed; do not format or repartition anything'
+                ;;
+            recover)
+                [ -n "$PLAN" ] || stop 'mode = recover requires plan = <bundle directory>'
+                run_helper "$RUN/partitioner" recover --plan "$PLAN" || true
+                ;;
+            *)
+                stop "unsupported mode '$ACTION' in the Apply request (use apply, verify or recover)"
+                ;;
+        esac
+        ;;
+    *)
+        stop "unknown ZIP mode '$MODE'"
+        ;;
+esac
+
+log 'Done.'
+exit 0

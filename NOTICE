@@ -1,0 +1,30 @@
+Amethyst UniXNU Partitioner
+Copyright (c) 2026, UniXNU contributors. All rights reserved.
+
+SPDX-License-Identifier: BSD-2-Clause-Patent
+
+This project is part of the UniXNU ecosystem and is distributed under the
+BSD-2-Clause-Patent license in LICENSE. The vendored reference sources under
+vendor/unixnu-dual_sys/ retain their original SPDX headers.
+
+The GPT, F2FS section-rounding and partition-safety algorithms are adapted from
+the official UniXNU dual-system sources:
+
+  scripts/dual_sys/partition.py
+  scripts/dual_sys/gpt.py
+  scripts/dual_sys/f2fs-shrink.c
+  scripts/dual_sys/twrp.sh
+  scripts/dual_sys/test_dual_sys.py
+  scripts/dual_sys/dual-system-partition.md
+
+They are included for study and comparison, not as runtime dependencies.
+
+No hardware validation on Xiaomi amethyst (SM7635) has been performed. The
+software and documentation are provided "as is", without warranty of any kind.
+The authors are not responsible for data loss, bricked devices, or damage
+caused by use, misuse, interruption, or an unsupported layout. This project
+does not install an operating system, does not format unixnu, and cannot
+restore file contents from a GPT backup.
+
+Third-party tooling used to build and test this project (Android clang, musl,
+QEMU, Python, zip) is not redistributed here and remains under its own license.

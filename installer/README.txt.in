@@ -1,0 +1,40 @@
+Amethyst UniXNU Partitioner - @ZIP_MODE@ ZIP
+=============================================
+
+This ZIP contains a statically linked AArch64 helper (bin/partitioner) and a
+small recovery shell entry point. It never downloads anything.
+
+Read the project README and docs/HARDWARE-TEST-REPORT.md before using it.
+The project has NOT been validated on Amethyst hardware.
+
+Inspect ZIP
+  Reads the current state and writes inspect-*.txt and inspect-*.json under
+  /sdcard/Amethyst-UniXNU-Partitioner/. It performs no partition or filesystem
+  writes, even when it reports UNSUPPORTED.
+
+Plan ZIP
+  Requires /sdcard/Amethyst-UniXNU-Partitioner/request.conf with:
+      mode = plan
+      size_gib = <size>
+      plan_dir = <absolute directory>
+  It reads the device, GPT and mounted F2FS and writes a plan bundle. It does
+  not resize anything.
+
+Apply ZIP
+  Requires /sdcard/Amethyst-UniXNU-Partitioner/request.conf with:
+      mode = apply
+      plan = <bundle directory>
+      confirm = unixnu <plan_id> <serial> <unixnu_bytes>
+      acknowledge_data_loss = yes
+  The bundle must be on external SD or /tmp, never on /sdcard or /data,
+  because apply unmounts /data. The helper revalidates every identity, GPT
+  byte, F2FS field and metadata hash before its first destructive operation.
+
+  After rebooting recovery you can reuse this ZIP in read-only modes:
+      mode = verify   (plan = ...)
+      mode = recover  (plan = ...)
+
+WARNING
+  Shrinking F2FS moves file data. A GPT backup does not contain file contents,
+  and restoring an old GPT cannot undo an F2FS shrink. Keep an independent
+  userdata/metadata backup. There is no automatic retry or rollback.

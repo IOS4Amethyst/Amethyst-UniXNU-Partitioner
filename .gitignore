@@ -1,0 +1,7 @@
+# Host build outputs (regenerate with scripts/build.sh)
+build/
+*.o
+
+# Python caches
+__pycache__/
+*.pyc

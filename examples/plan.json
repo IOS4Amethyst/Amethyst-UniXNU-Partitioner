@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "tool": "amethyst-unixnu-partitioner",
+  "version": "0.1.0",
+  "plan_id": "975167e85ae042fb9ff5b1fb1a76b71e",
+  "created": "2026-10-28T02:11:44Z",
+  "identity": {"serial": "FIXTURESERIAL", "model": "Fixture Amethyst", "device": "amethyst",
+               "kernel": "6.6.0-fixture", "machine": "aarch64", "recovery": "twrp"},
+  "device": {"disk": "/dev/block/sda", "disk_bytes": 536870912, "sector": 4096},
+  "userdata_before": {"index": 3, "start_lba": 2048, "end_lba": 131066, "bytes": 528461824},
+  "userdata_after": {"index": 3, "start_lba": 2048, "end_lba": 114431, "bytes": 460324864},
+  "unixnu": {"index": 4, "start_lba": 114432, "end_lba": 130815, "bytes": 67108864, "type_guid": "0fc63daf-8483-4772-8e79-3d69d8477de4", "unique_guid": "de08b3bd-6d93-4348-bfcf-305a5618d6ea"},
+  "filesystem": {"blocks_before": 128000, "blocks_after": 112128, "limit_blocks": 112384, "uuid": "12345678-1234-4234-8234-123456789abc"},
+  "confirm": "unixnu 975167e85ae042fb9ff5b1fb1a76b71e FIXTURESERIAL 67108864"
+}

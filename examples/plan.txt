@@ -1,0 +1,41 @@
+Amethyst UniXNU partition plan
+Tool: amethyst-unixnu-partitioner 0.1.0
+Created: 2026-10-28T02:11:44Z
+Plan ID: 975167e85ae042fb9ff5b1fb1a76b71e
+
+Device: Fixture Amethyst
+Hardware serial: FIXTURESERIAL
+Storage: /dev/block/sda (536870912 bytes, 4096-byte logical sectors)
+userdata: index 3, LBA 2048..131066, 503.980 MiB (528461824 bytes)
+metadata: index 2, LBA 64..127 (unchanged)
+
+Planned unixnu: index 4, LBA 114432..130815, 64.000 MiB (67108864 bytes)
+Remaining userdata: LBA 2048..114431, 439.000 MiB (460324864 bytes)
+Alignment gap after unixnu: 0.980 MiB (1028096 bytes)
+unixnu type GUID: 0fc63daf-8483-4772-8e79-3d69d8477de4
+unixnu unique GUID: de08b3bd-6d93-4348-bfcf-305a5618d6ea
+
+F2FS blocks: 128000 -> 112128 (partition limit 112384)
+Available F2FS blocks reported by statfs: 100000
+
+Bundle contents: plan.conf, plan.txt, plan.json, plan.env, session, stage,
+gpt-primary.before, gpt-backup.before, gpt-primary.after, gpt-backup.after,
+SHA256SUMS.
+
+BUNDLE LOCATION FOR APPLY
+Apply unmounts /data, so it refuses a bundle stored on /data, /sdcard or other
+userdata-backed internal storage. Copy this directory to an external SD card
+(or /tmp for a single recovery session) and set plan = that path in the Apply
+request. The stage log and apply session must stay writable until <data> is
+unmounted and both GPT copies are verified.
+
+To apply, run the Apply ZIP with mode = apply, plan = this directory,
+acknowledge_data_loss = yes and this exact confirm value:
+
+unixnu 975167e85ae042fb9ff5b1fb1a76b71e FIXTURESERIAL 67108864
+
+DATA-LOSS WARNING
+Shrinking F2FS moves file data and rewrites the partition table. A GPT backup
+does not contain file contents, and restoring the old GPT cannot undo an F2FS
+shrink. Keep a separate backup of userdata and metadata. Do not format either
+partition and do not retry an interrupted apply.
