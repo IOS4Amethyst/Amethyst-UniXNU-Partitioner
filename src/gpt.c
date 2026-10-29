@@ -392,7 +392,7 @@ int gpt_make_layout(const gpt_t *gpt, int userdata_index, uint64_t requested_byt
     if (!end)
         return failf(err, errlen, "cannot align the end of userdata");
     end -= 1;
-    /* Keep the reserve in userdata: unixnu starts below it, never inside it. */
+    /* Leave an unallocated tail above unixnu, outside both new GPT entries. */
     uint64_t reserve_sectors = reserve_bytes / gpt->sector;
     if (reserve_sectors >= end + 1 - u->start)
         return failf(err, errlen, "reserve_mib leaves no usable userdata");

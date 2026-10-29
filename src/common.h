@@ -29,9 +29,8 @@
 #define MAX_GPT_ENTRIES 4096U
 #define F2FS_BLOCK_BYTES 4096U
 
-/* sheng keeps its Data store and diagnostic log in the last 1 GiB of userdata
- * (NativeUfs.cpp kDefaultReserveMiB), so a split must leave that inside
- * userdata rather than handing it to unixnu. */
+/* Unallocated tail gap after unixnu, NOT a writable region inside userdata.
+ * Kept at 1024 for existing request/layout compatibility. */
 #define F2FS_RESERVE_MIB_DEFAULT 1024U
 
 /* F2FS checkpoint flags (struct f2fs_checkpoint, ckpt_flags at byte 132). */
@@ -394,7 +393,7 @@ typedef struct {
     int fs_sb_damaged_copy;
     uint64_t limit_blocks;
     uint64_t expected_blocks;
-    uint64_t reserve_mib;      /* MiB kept inside userdata above unixnu (sheng store/log) */
+    uint64_t reserve_mib;      /* Unallocated tail gap after unixnu, in MiB. */
     int unixnu_index;
     uint64_t unixnu_start_lba;
     uint64_t unixnu_end_lba;

@@ -67,7 +67,7 @@ expect_ok 'host selftest passes' "$HOST" selftest
 expect_contains 'host selftest prints PASS' "$WORK/cmd.out" 'SELFTEST PASS'
 
 echo '== fixture =='
-# 2 GiB of sectors: the default 1024 MiB sheng reserve plus a 64 MiB unixnu
+# 2 GiB of sectors: the default 1024 MiB tail gap plus a 64 MiB unixnu
 # must fit, which a 512 MiB disk cannot express. The file is sparse.
 expect_ok 'fixture creates' python3 tests/make_fixture.py "$FIX" --sectors=524288
 if [ ! -d "$FIX/dev/block" ]; then
@@ -181,8 +181,8 @@ U_END=$(sed -n 's/^userdata_new_end_lba=//p' "$FIX/plans/p1/plan.conf")
 X_START=$(sed -n 's/^unixnu_start_lba=//p' "$FIX/plans/p1/plan.conf")
 X_END=$(sed -n 's/^unixnu_end_lba=//p' "$FIX/plans/p1/plan.conf")
 U_ORIG_END=$(sed -n 's/^userdata_end_lba=//p' "$FIX/plans/p1/plan.conf")
-# The split keeps userdata's start and its real end, puts unixnu flush below
-# the shrunken userdata, and leaves the 1024 MiB sheng reserve above unixnu.
+# The split keeps userdata's start, puts unixnu immediately above the shrunken
+# userdata, and leaves an unallocated tail above unixnu.
 if [ "$U_START" = 2048 ] && [ "$X_START" = $((U_END + 1)) ] \
     && [ "$U_ORIG_END" = 524282 ] && [ $(( (U_ORIG_END - X_END) * 4096 )) -ge $((1024 * 1024 * 1024)) ]; then
     ok 'plan geometry preserves the userdata start and splits at the tail'
@@ -390,12 +390,9 @@ cpcase f2fs-cp-first-damaged SUPPORTED 'Damaged checkpoint copy     : 1'
 cpcase f2fs-cp-resizefs-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS was left mid-resize'
 cpcase f2fs-cp-fsck-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS is marked for fsck'
 
-echo '== choosable size with the sheng reserve (realistic 465 GiB userdata) =='
-# sheng keeps its Data store and diagnostic log in the last 1 GiB of userdata,
-# so a split must leave that region inside userdata. These cases use the real
-# Amethyst geometry (userdata 2539520..124477434, 4096-byte sectors) so a
-# 128 GiB request plus a 1024 MiB reserve fits, which the 512 MiB fixture
-# cannot express.
+echo '== choosable size with unallocated tail (scaled synthetic disk) =='
+# Device-sized disk but synthetic userdata start 2048. The gap is outside both
+# partition entries; it grants no permission to write inside Android F2FS.
 RSV="$WORK/reserve"
 mkdir -p "$RSV"
 expect_ok 'reserve fixture creates at real geometry' \
@@ -414,25 +411,48 @@ if [ -d "$RSV/f/dev/block" ]; then
 
     expect_ok 'plan 128 GiB with default reserve succeeds' reserve_plan r-default 128 ''
     if [ -f "$RSV/f/plans/r-default/plan.conf" ]; then
-        # Default is 1024 MiB because kDefaultReserveMiB is 1024: forgetting
-        # the key must not be the dangerous case.
+        # Retain the existing default without claiming persistence protection.
         [ "$(conf_get r-default reserve_mib)" = 1024 ] \
             && ok 'default reserve is 1024 MiB' \
             || bad "default reserve is 1024 MiB (got $(conf_get r-default reserve_mib))"
         [ "$(conf_get r-default unixnu_bytes)" = 137438953472 ] \
             && ok 'default-reserve unixnu is exactly 128 GiB' \
             || bad 'default-reserve unixnu is exactly 128 GiB'
-        # The reserve must still be inside userdata: the partition keeps its
-        # real end, and unixnu stops at least 1024 MiB below it.
+        expect_ok 'after-GPT proves tail is outside userdata and unixnu' \
+            python3 - "$RSV/f/plans/r-default" <<'PY'
+import pathlib, struct, sys
+p = pathlib.Path(sys.argv[1])
+conf = dict(line.split('=', 1) for line in (p/'plan.conf').read_text().splitlines() if '=' in line)
+sector = int(conf['sector'])
+data = (p/'gpt-primary.after').read_bytes()
+table = struct.unpack_from('<Q', data, sector + 72)[0] * sector
+count, size = struct.unpack_from('<II', data, sector + 80)
+parts = {}
+for i in range(count):
+    e = data[table+i*size:table+(i+1)*size]
+    if any(e[:16]):
+        name = e[56:128].decode('utf-16-le').split('\0', 1)[0]
+        parts[name] = struct.unpack_from('<QQ', e, 32)
+u, x = parts['userdata'], parts['unixnu']
+assert u[1] + 1 == x[0]
+assert u[1] == int(conf['userdata_new_end_lba'])
+assert x[1] < int(conf['userdata_end_lba'])
+assert (int(conf['userdata_end_lba']) - x[1]) * sector >= 1024 * 1048576
+assert int(conf['limit_blocks']) * 4096 == (u[1] - u[0] + 1) * sector
+text = (p/'plan.txt').read_text()
+assert 'tail gap does not protect Android F2FS' in text
+assert 'Reserved inside userdata' not in text
+PY
+        # userdata_end_lba is BEFORE-state, not the new GPT entry's end.
         ud_end=; ux_end=; gap_mib=
         ud_end=$(conf_get r-default userdata_end_lba)
         ux_end=$(conf_get r-default unixnu_end_lba)
         gap_mib=$(( (ud_end - ux_end) * 4096 / 1048576 ))
         [ "$ud_end" = 124477434 ] \
-            && ok 'reserve keeps the userdata entry at its real end' \
-            || bad "reserve keeps the userdata entry at its real end (got $ud_end)"
+            && ok 'plan records the original userdata end' \
+            || bad "plan records the original userdata end (got $ud_end)"
         [ "$gap_mib" -ge 1024 ] \
-            && ok "reserve leaves ${gap_mib} MiB of userdata above unixnu" \
+            && ok "reserve leaves ${gap_mib} MiB unallocated above unixnu" \
             || bad "reserve leaves >=1024 MiB above unixnu (got ${gap_mib})"
         # The shrink limit must be derived from the shrunken userdata, not the
         # full partition, or apply would size F2FS over unixnu.
@@ -465,8 +485,7 @@ if [ -d "$RSV/f/dev/block" ]; then
 
     expect_fail 'plan refuses a non-numeric reserve' reserve_plan r-text 128 1G
 
-    # A bundle whose reserve does not cover the gap must be rejected on load,
-    # so a hand-edited plan cannot hand sheng's tail to unixnu.
+    # Editing the recorded gap invalidates the bundle checksum.
     if cp -a "$RSV/f/plans/r-default" "$RSV/f/plans/r-tampered" 2>/dev/null; then
         sed -i 's/^reserve_mib=.*/reserve_mib=4096/' "$RSV/f/plans/r-tampered/plan.conf"
         if (cd "$RSV/f/plans/r-tampered" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then

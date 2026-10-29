@@ -143,22 +143,23 @@ for an idle recovery. Result stayed `SUPPORTED WITH WARNINGS` with no
 filesystem's *total* capacity counter, not free space; statfs `available`
 (112,286,292) is the free figure.
 
-### `size_gib` and the sheng reserve
+### Correction: `reserve_mib` is an unallocated tail, not persistence protection
 
-`size_gib` is chosen by the operator; the tool does not hardcode a size. It
-also takes `reserve_mib` (default 1024), because sheng keeps its Data store and
-diagnostic log in the last 1 GiB of userdata
-(`kDefaultReserveMiB` in `drivers/ShengUfs/NativeUfs.cpp`). `unixnu` is placed
-*below* that reserve instead of at the partition's true end, so the two never
-overlap. Measured offline against this device's geometry:
+`size_gib` is chosen by the operator. `reserve_mib` (default 1024) leaves an
+unallocated gap above unixnu, not space inside the new userdata entry. The
+previous statement that this protects sheng's Data/log writes was incorrect.
+Those writes would target Android F2FS. Split-device persistence is now disabled
+in the UFS component pending a dedicated validated allocation.
+The following offline numbers used a scaled synthetic fixture with start LBA
+2048, NOT the device's actual userdata start 2539520:
 
 | Request | `unixnu` LBAs | `unixnu` | userdata left |
 | --- | --- | --- | --- |
 | 128 GiB, reserve 0 | 90922752..124477183 | 128.000000 GiB | 346.83 GiB |
 | 128 GiB, reserve 1024 | 90660608..124215039 | 128.000000 GiB | 345.83 GiB |
 
-Both keep userdata at its real end (124477434), leave `unixnu` flush against
-the shrunken userdata, and leave the reserve inside the `userdata` entry.
+Both shrink userdata's end to `unixnu_start - 1`. The gap after unixnu is outside
+both partitions. The original end 124477434 is recorded only as before-state.
 `reserve_mib = 0` reproduces the upstream reference layout byte-for-byte.
 
 ### What is still unproven on hardware

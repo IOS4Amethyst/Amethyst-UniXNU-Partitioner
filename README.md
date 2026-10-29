@@ -117,13 +117,13 @@ plan_dir = /external_sd/Amethyst-UniXNU-Partitioner/plans/amethyst-1
 absolute path on external SD, USB OTG or `/tmp`, never on `/sdcard` or `/data`.
 Use the actual mount path shown in TWRP; `/external_sd` is only an example.
 
-`reserve_mib` (default `1024`) is space kept inside userdata *above* the new
-`unixnu` partition. sheng keeps its Data store and diagnostic log in the last
-1 GiB of userdata, so `unixnu` is placed below that reserve rather than at the
-partition's true end. A reserve that leaves no usable userdata is refused. Set
-`0` only when sheng persistence is unused. Plan records the value in
-`plan.conf`, `plan.json` and `plan.env`, and apply refuses a plan whose reserve
-no longer covers the tail of userdata.
+`reserve_mib` (default `1024`, retained for layout compatibility) leaves an
+**unallocated gap after unixnu**, outside both new partition entries. `0` omits
+the extra gap. It does **not** reserve space inside Android F2FS or authorize
+raw writes there. Split-device sheng Data persistence and log/export must stay
+disabled until a dedicated storage allocation is validated. Do not run Apply
+based on the earlier, incorrect claim that this gap protects persistence.
+Plan records the value in `plan.conf`, `plan.json` and `plan.env`.
 
 Install the Plan ZIP. Review the printed layout and then inspect the bundle:
 

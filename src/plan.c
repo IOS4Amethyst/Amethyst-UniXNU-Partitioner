@@ -201,10 +201,9 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
     uint64_t requested = mib * MIB;
 
     /*
-     * The reserve stays inside the userdata entry and is never given to
-     * unixnu. sheng keeps its Data store and diagnostic log in the last
-     * kDefaultReserveMiB of userdata, so a split that reached the partition's
-     * true end would hand those blocks to the other OS.
+     * reserve_mib leaves an unallocated tail after unixnu. It does not protect
+     * raw writes inside Android userdata. Split-device sheng persistence must
+     * remain disabled until a separate storage allocation is validated.
      */
     uint64_t reserve_mib = F2FS_RESERVE_MIB_DEFAULT;
     if (req->reserve_set && parse_u64(req->reserve, &reserve_mib) < 0)
@@ -487,8 +486,10 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "\n"
         "Planned unixnu: index %d, LBA %" PRIu64 "..%" PRIu64 ", %s\n"
         "Remaining userdata: LBA %" PRIu64 "..%" PRIu64 ", %s\n"
-        "Reserved inside userdata above unixnu: %" PRIu64 " MiB (sheng Data store and log)\n"
-        "Alignment gap after unixnu: %s\n"
+        "Requested unallocated tail after unixnu: %" PRIu64 " MiB\n"
+        "Total unallocated tail (including alignment): %s\n"
+        "WARNING: tail gap does not protect Android F2FS from raw writes.\n"
+        "Keep split-device sheng Data persistence and log/export disabled.\n"
         "unixnu type GUID: %s\n"
         "unixnu unique GUID: %s\n"
         "\n"
@@ -752,13 +753,13 @@ int plan_load(const char *plan_dir, plan_info_t *plan, char *err, size_t errlen)
     if (plan->limit_blocks != plan->userdata_new_bytes / F2FS_BLOCK_BYTES)
         return failf(err, errlen, "plan has inconsistent F2FS limit");
     /*
-     * The reserve must still fit between the top of unixnu and the partition's
-     * real end, in whole MiB: that tail is sheng's Data store and log, and it
-     * stays part of userdata. A plan whose reserve does not cover the gap would
-     * hand those blocks to unixnu.
+     * Validate the unallocated gap against the ORIGINAL userdata end.
+     * This is not proof of a safe persistence allocation.
      */
+    if (plan->unixnu_end_lba > plan->userdata_end_lba)
+        return failf(err, errlen, "plan unixnu exceeds original userdata end");
     uint64_t gap_sectors = plan->userdata_end_lba - plan->unixnu_end_lba;
-    if (plan->reserve_mib > UINT64_MAX / MIB / plan->sector ||
+    if (plan->reserve_mib > UINT32_MAX ||
         gap_sectors < plan->reserve_mib * MIB / plan->sector)
         return failf(err, errlen, "plan reserve does not cover the tail of userdata");
     return 0;
