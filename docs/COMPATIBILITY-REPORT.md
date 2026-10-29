@@ -71,9 +71,9 @@ only the mode the installer requests differs.
 
 | ZIP | SHA-256 | Mode |
 | --- | --- | --- |
-| `Amethyst-UniXNU-Partitioner-Inspect.zip` | `8bfa60c3d74bb430d8274e1383fa16a26bd81af6d5b85339daa2bd0d0b02df02` | read-only inspect |
-| `Amethyst-UniXNU-Partitioner-Plan.zip` | `875a76d3511c57f1929a5ab3d6d99064df90eaf057d417be630ad7423a869a0f` | plan bundle only |
-| `Amethyst-UniXNU-Partitioner-Apply.zip` | `d9a35736adbeb78ea64cd26595e75635dfb98398acd56e4e166fde6ad443df67` | gated destructive apply |
+| `Amethyst-UniXNU-Partitioner-Inspect.zip` | `a34be661aa3e6222158c57cb4bc10e6544caa34059a7a743f306e7b882e5ac77` | read-only inspect |
+| `Amethyst-UniXNU-Partitioner-Plan.zip` | `5ca924e86c0a610e762735f56cfa0b944186b8737c9b3eb61606557783dfaf42` | plan bundle only |
+| `Amethyst-UniXNU-Partitioner-Apply.zip` | `95a8c849c4ceaf77832451017bdef0b835dec8e3bd701c56fe51af9352d0dedb` | gated destructive apply |
 
 These are the hashes of the archives in this commit. `dist/SHA256SUMS` is the
 file to check against for copies you distribute.
@@ -101,7 +101,7 @@ mismatch is resolved.
 ### Helper binary
 
 ```
-SHA-256 : 23615e3bae8763e19eb52d92a3ed4e7c6a7b7f71a1b3680357cb479e7a560de4
+SHA-256 : 9227c8beefbf9da3dfaef3816db4a4c3a78f11e7d928f42a6be209459de3907f
 file    : ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV),
           statically linked, stripped
 size    : 198352 bytes
@@ -307,7 +307,7 @@ against a device until that lookup targets `/dev/block/by-name/unixnu`; the
 
 ## 8. Offline test coverage
 
-`tests/run_tests.sh` runs 185 checks. Relevant to this report:
+`tests/run_tests.sh` runs 195 checks. Relevant to this report:
 
 | Area | Coverage |
 | --- | --- |

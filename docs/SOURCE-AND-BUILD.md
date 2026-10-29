@@ -152,6 +152,26 @@ A plan records the active superblock offset and damaged copy
 (`fs_sb_offset`, `fs_sb_damaged_copy`) and apply refuses if either changes.
 `tests/run_tests.sh` asserts all four states through both inspect and plan.
 
+The checkpoint pair follows the same rule for the same reason. F2FS picks the
+copy with the higher `checkpoint_ver`, but a torn copy can hold any 64-bit value
+there, so a copy is only ranked once it looks like a checkpoint at all
+(`user_block_count` and `valid_block_count` within the device). A damaged copy is
+named by number and the other copy is used; only a pair with neither usable
+refuses. The fixtures set `checkpoint_ver` to `1<<62` on a torn copy so a
+version-only comparison selects garbage and the test fails.
+
+Two checkpoint states refuse outright, because shrinking moves the allocation
+metadata they describe:
+
+| Flag | Meaning | Reported as |
+| --- | --- | --- |
+| `CKPT_FLAG_RESIZEFS` | an earlier resize did not finish | `F2FS was left mid-resize; run fsck.f2fs or finish the resize first` |
+| `CKPT_FLAG_FSCK` | filesystem is marked for repair | `F2FS is marked for fsck; repair it before shrinking` |
+
+The flag constants live in `src/common.h` so the report and the refusal cannot
+drift; `state.c` prints every flag it knows about, then `f2fs.c` decides which
+ones stop the run.
+
 Two JSON schemas are versioned independently: `PLAN_SCHEMA` in `src/plan.c` and
 `INSPECT_SCHEMA` in `src/state.c` are both `2`. Removing `fs_sb_sha256` and
 turning `unsupported` entries into objects changed both shapes, so a consumer of

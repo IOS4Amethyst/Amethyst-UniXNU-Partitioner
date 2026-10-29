@@ -81,6 +81,33 @@ and prefers the newer copy; it does not require the copies to be identical.
 validated against, rejects mismatched superblocks, so the stricter behaviour was
 intentional, but it produces an unusable verdict rather than an actionable one.
 
+### Run 3: the fixed helper reads the filesystem
+
+After the superblock fix, a third read-only Inspect completed with
+`RESULT: SUPPORTED WITH WARNINGS`. No `UNSUPPORTED` condition remained:
+
+```text
+Superblock copies match     : yes
+Checkpoint copies match     : no
+Active checkpoint copy      : first (higher checkpoint_ver)
+Checkpoint version          : 393237468
+Checkpoint flags            : 0x00000044
+Features                    : 0x00001499 encrypt
+```
+
+The superblocks are in fact byte-identical, so Run 2's refusal was the tool
+reading a stale view of the pair, not a damaged device. `0x00000044` decodes as
+`CP_COMPACT_SUM_FLAG|CP_CRC_RECOVERY_FLAG`, both benign, so the new
+`RESIZEFS`/`FSCK` refusals would not have fired here.
+
+The three warnings are the ones that remain, and all three are expected for an
+unclean shutdown: checkpoint copies differ, the encrypt feature is set, and the
+resize capability probe is inconclusive because OrangeFox hides kallsyms.
+
+Capacity on this device is comfortable: 465.156 GiB of `userdata` with
+112,279,460 blocks available (~428 GiB free), against 9,066,588 valid blocks
+(~34.5 GiB) of real data.
+
 ### Tool changes prompted by these runs
 
 - A superblock mismatch with a valid second copy is now a warning that names the
@@ -91,7 +118,10 @@ intentional, but it produces an unusable verdict rather than an actionable one.
 - Every unsupported condition is now tagged `fixable-in-recovery` (operator can
   clear it: mount state, serial, unreadable device) or `hard` (layout cannot
   support the split), in both the text and JSON reports.
-- The newest F2FS checkpoint copy is reported when the checkpoint copies differ.
+- The F2FS checkpoint copy is chosen by validity before version, and a damaged
+  copy is named by number, for the same reason as the superblock pair.
+- `CKPT_FLAG_RESIZEFS` and `CKPT_FLAG_FSCK` now refuse rather than being defined
+  and ignored, since both describe allocation metadata that shrinking moves.
 
 ### What is still unproven on hardware
 
@@ -111,9 +141,9 @@ with files intact. Until then this project makes no data-preserving claim.
 
 | Area | Result |
 | --- | --- |
-| Host build, self-test and offline fixture suite | **PASS** (185/185 checks) |
+| Host build, self-test and offline fixture suite | **PASS** (195/195 checks) |
 | Host ASan/UBSan self-test, inspect, plan and fake apply | **PASS** |
-| Amethyst hardware inspect | **PASS**, read-only (see §1) |
+| Amethyst hardware inspect | **PASS**, read-only, `SUPPORTED WITH WARNINGS` (§1 Run 3) |
 | Amethyst hardware plan | **NOT RUN** |
 | Amethyst hardware apply (authorized destructive) | **NOT RUN** |
 | Amethyst Android boot after split | **NOT RUN** |
@@ -199,6 +229,9 @@ GPT image handling and independent consistency checks, not kernel behavior.
 | F2FS block count larger than the partition | PASS | refuses, disk unchanged |
 | One F2FS superblock copy damaged | PASS | warns, names the active copy, continues read-only |
 | Both F2FS superblock copies damaged | PASS | refuses, disk unchanged |
+| One F2FS checkpoint copy torn, with a higher version | PASS | uses the valid copy, reports its version |
+| F2FS checkpoint flagged mid-resize | PASS | refuses before any write |
+| F2FS checkpoint flagged for fsck | PASS | refuses before any write |
 | Unsupported condition tagged `fixable-in-recovery` or `hard` | PASS | text and JSON reports |
 | Surviving `/data` bind mount | PASS | apply stops at `f2fs-verified`, GPT untouched |
 | Injected F2FS resize failure | PASS | stage `f2fs-shrink-started`, GPT untouched, no retry |
@@ -212,10 +245,10 @@ GPT image handling and independent consistency checks, not kernel behavior.
 Built artifacts for this report:
 
 ```
-d9a35736adbeb78ea64cd26595e75635dfb98398acd56e4e166fde6ad443df67  Amethyst-UniXNU-Partitioner-Apply.zip
-8bfa60c3d74bb430d8274e1383fa16a26bd81af6d5b85339daa2bd0d0b02df02  Amethyst-UniXNU-Partitioner-Inspect.zip
-875a76d3511c57f1929a5ab3d6d99064df90eaf057d417be630ad7423a869a0f  Amethyst-UniXNU-Partitioner-Plan.zip
-23615e3bae8763e19eb52d92a3ed4e7c6a7b7f71a1b3680357cb479e7a560de4  bin/partitioner (helper inside each ZIP)
+95a8c849c4ceaf77832451017bdef0b835dec8e3bd701c56fe51af9352d0dedb  Amethyst-UniXNU-Partitioner-Apply.zip
+a34be661aa3e6222158c57cb4bc10e6544caa34059a7a743f306e7b882e5ac77  Amethyst-UniXNU-Partitioner-Inspect.zip
+5ca924e86c0a610e762735f56cfa0b944186b8737c9b3eb61606557783dfaf42  Amethyst-UniXNU-Partitioner-Plan.zip
+9227c8beefbf9da3dfaef3816db4a4c3a78f11e7d928f42a6be209459de3907f  bin/partitioner (helper inside each ZIP)
 ```
 
 Helper bytes: 198352. This build came from the Alpine aarch64 toolchain under
@@ -295,5 +328,5 @@ QEMU_AARCH64=/path/to/qemu-aarch64 ./scripts/build.sh
 QEMU_AARCH64=/path/to/qemu-aarch64 ./tests/run_tests.sh
 ```
 
-Expected final line: `TESTS: 185 passed, 0 failed`. This count covers the offline
+Expected final line: `TESTS: 195 passed, 0 failed`. This count covers the offline
 suite only and is not evidence of hardware success.
