@@ -249,9 +249,11 @@ static void print_fs(report_t *r, const state_t *s)
     rp_kv(r, "Checkpoint user blocks", "%" PRIu64, fs->cp_user_blocks);
     rp_kv(r, "Checkpoint valid blocks", "%" PRIu64, fs->cp_valid_blocks);
     rp_kv(r, "Checkpoint free segments", "%u", fs->cp_free_segments);
-    rp_kv(r, "Superblocks match", "%s", fs->sb_offset ? "no" : "yes");
-    if (fs->sb_offset)
-        rp_kv(r, "Newest superblock offset", "%u", fs->sb_offset);
+    rp_kv(r, "Superblock copies match", "%s", fs->sb_offset ? "no" : "yes");
+    if (fs->sb_damaged_copy)
+        rp_kv(r, "Damaged superblock copy", "%d (the other copy is used)", fs->sb_damaged_copy);
+    else if (fs->sb_offset)
+        rp_kv(r, "Active superblock copy", "2 (copies differ; the kernel prefers copy 2)");
 }
 
 static void print_gpt(report_t *r, const state_t *s)
@@ -381,12 +383,18 @@ static void print_result(report_t *r, state_t *s)
           "old GPT cannot reverse a failed F2FS shrink. Keep an independent backup.\n");
 }
 
+/* The inspect JSON shape changed when unsupported reasons gained actions and
+ * the filesystem block gained the superblock fields, so consumers of schema 1
+ * must refuse rather than silently miss the new keys. */
+#define INSPECT_SCHEMA 2
+
 static void write_inspect_json(const state_t *s, const char *path)
 {
     FILE *f = fopen(path, "w");
     if (!f)
         return;
-    fprintf(f, "{\n  \"schema\": 1,\n  \"tool\": \"" TOOL_NAME "\",\n  \"version\": \"" TOOL_VERSION "\",\n");
+    fprintf(f, "{\n  \"schema\": %d,\n  \"tool\": \"" TOOL_NAME "\",\n  \"version\": \"" TOOL_VERSION "\",\n",
+            INSPECT_SCHEMA);
     fprintf(f, "  \"result\": ");
     json_string(f, state_verdict(s));
     fprintf(f, ",\n  \"identity\": {\n    \"device\": ");

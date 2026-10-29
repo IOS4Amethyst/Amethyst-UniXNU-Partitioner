@@ -1,7 +1,7 @@
 Amethyst UniXNU partition plan
 Tool: amethyst-unixnu-partitioner 0.1.0
-Created: 2026-10-28T02:11:44Z
-Plan ID: 975167e85ae042fb9ff5b1fb1a76b71e
+Created: 2026-10-28T23:58:43Z
+Plan ID: 6081bdc305cf4ff593b698f4ebeb1c1d
 
 Device: Fixture Amethyst
 Hardware serial: FIXTURESERIAL
@@ -13,7 +13,7 @@ Planned unixnu: index 4, LBA 114432..130815, 64.000 MiB (67108864 bytes)
 Remaining userdata: LBA 2048..114431, 439.000 MiB (460324864 bytes)
 Alignment gap after unixnu: 0.980 MiB (1028096 bytes)
 unixnu type GUID: 0fc63daf-8483-4772-8e79-3d69d8477de4
-unixnu unique GUID: de08b3bd-6d93-4348-bfcf-305a5618d6ea
+unixnu unique GUID: a843fdb0-446f-6844-b65e-8cac86d0528b
 
 F2FS blocks: 128000 -> 112128 (partition limit 112384)
 Available F2FS blocks reported by statfs: 100000
@@ -32,7 +32,7 @@ unmounted and both GPT copies are verified.
 To apply, run the Apply ZIP with mode = apply, plan = this directory,
 acknowledge_data_loss = yes and this exact confirm value:
 
-unixnu 975167e85ae042fb9ff5b1fb1a76b71e FIXTURESERIAL 67108864
+unixnu 6081bdc305cf4ff593b698f4ebeb1c1d FIXTURESERIAL 67108864
 
 DATA-LOSS WARNING
 Shrinking F2FS moves file data and rewrites the partition table. A GPT backup

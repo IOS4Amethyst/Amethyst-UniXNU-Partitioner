@@ -313,10 +313,11 @@ def main():
         (dest / 'sys/devices/fixture/block/sda/sda3/size').write_text(
             f'{(end - start + 1) * SECTOR // 512}\n')
 
-    elif mode.startswith('f2fs-'):
-        # The superblock starts 1024 bytes into each 4096-byte block, and the
-        # helper requires both copies to agree, so edit both. Only the field is
-        # written, so the rest of the sparse userdata image stays a hole.
+    elif mode in ('f2fs-ext4', 'f2fs-bad-block', 'f2fs-bad-seg', 'f2fs-multi-seg',
+                  'f2fs-multi-dev', 'f2fs-oversize'):
+        # Both copies are edited so the change is a layout value, not a torn
+        # write: a single-field difference would make the copy-mismatch warning
+        # fire instead of the intended geometry refusal.
         if mode == 'f2fs-ext4':
             field, width, value = 0, '<I', 0xEF53
         elif mode == 'f2fs-bad-block':
@@ -335,6 +336,19 @@ def main():
         blob = bytearray(struct.pack(width, value))
         for base in (1024, SECTOR + 1024):
             write_region(userdata, base + field, blob)
+
+    elif mode == 'f2fs-sb-first-damaged':
+        # Magic only in the second copy: the first is a torn write.
+        write_region(userdata, 1024, bytearray(struct.pack('<I', 0)))
+    elif mode == 'f2fs-sb-second-damaged':
+        # Magic only in the first copy.
+        write_region(userdata, SECTOR + 1024, bytearray(struct.pack('<I', 0)))
+    elif mode == 'f2fs-sb-both-damaged':
+        write_region(userdata, 1024, bytearray(struct.pack('<I', 0)))
+        write_region(userdata, SECTOR + 1024, bytearray(struct.pack('<I', 0)))
+    elif mode == 'f2fs-sb-field-differs':
+        # Both magic-valid, layout fields identical, one unrelated byte differs.
+        write_region(userdata, SECTOR + 1024 + 3000, bytearray(b'\x01'))
 
     elif mode == 'busy-bind':
         mounts = dest / 'proc' / 'mounts'

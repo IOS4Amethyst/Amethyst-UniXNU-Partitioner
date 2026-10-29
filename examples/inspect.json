@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "tool": "amethyst-unixnu-partitioner",
   "version": "0.1.0",
   "result": "SUPPORTED",
@@ -20,7 +20,7 @@
     "userdata": {"raw": "/dev/block/sda3", "index": 3, "start_lba": 2048, "end_lba": 131066, "bytes": 528461824},
     "metadata": {"raw": "/dev/block/sda2", "index": 2, "start_lba": 64, "end_lba": 127, "bytes": 262144}
   },
-  "filesystem": {"type":"f2fs","blocks":128000,"block_size":4096,"blocks_per_seg":512,"segs_per_sec":1,"section_blocks":512,"mounted":true,"available_blocks":100000,"encrypt_feature":false,"cp_copies_match":true},
+  "filesystem": {"type":"f2fs","blocks":128000,"block_size":4096,"blocks_per_seg":512,"segs_per_sec":1,"section_blocks":512,"mounted":true,"available_blocks":100000,"encrypt_feature":false,"cp_copies_match":true,"sb_offset":0,"cp1_newer":false},
   "gpt": {"count":32,"used":3,"blocks":4,"first_usable":6,"last_usable":131066},
   "warnings": [],
   "unsupported": []

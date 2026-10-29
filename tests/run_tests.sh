@@ -280,6 +280,63 @@ cfixture f2fs-multi-seg f2fs-multi-seg 'unsupported F2FS sections'
 cfixture f2fs-multi-dev f2fs-multi-dev 'multi-device F2FS is unsupported'
 cfixture f2fs-oversize f2fs-oversize 'exceeds the userdata partition'
 
+echo '== F2FS superblock pair: one damaged copy recovers, none refuses =='
+# Mounting needs only one valid copy and the kernel prefers the second, so a
+# torn write on either copy must be a warning, not a refusal. Only "neither
+# copy carries the magic" may be a hard stop.
+sbcase() {
+    local name=$1 want=$2 want_text=$3
+    local dir="$WORK/corrupt/$name"
+    if ! python3 tests/corrupt_fixture.py "$FIX" "$dir" "$name" >"$WORK/cmd.out" 2>&1; then
+        bad "superblock fixture builds: $name"
+        tail -5 "$WORK/cmd.out" | sed 's/^/    /'
+        return
+    fi
+    ok "superblock fixture builds: $name"
+    mkdir -p "$dir/reports"
+    UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" inspect --root "$dir" \
+        --identity /identity.conf --out /reports/i.txt >"$WORK/cmd.out" 2>&1
+    if grep -Fq "RESULT: $want" "$dir/reports/i.txt"; then
+        ok "superblock inspect result is $want: $name"
+    else
+        bad "superblock inspect result is $want: $name"
+        grep -m3 'RESULT:\|UNSUPPORTED' "$dir/reports/i.txt" | sed 's/^/    /'
+    fi
+    if [ -n "$want_text" ] && ! grep -Fq -- "$want_text" "$dir/reports/i.txt"; then
+        bad "superblock report says '$want_text': $name"
+    elif [ -n "$want_text" ]; then
+        ok "superblock report says '$want_text': $name"
+    fi
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/sb\n' \
+        >"$dir/req.conf"
+    if [ "$want" = SUPPORTED ]; then
+        if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
+            --identity /identity.conf --request /req.conf >"$WORK/cmd.out" 2>&1; then
+            ok "superblock plan records the active copy: $name"
+        else
+            bad "superblock plan records the active copy: $name"
+            grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+        fi
+        if grep -Fq 'fs_sb_offset=' "$dir/plans/sb/plan.conf" 2>/dev/null; then
+            ok "superblock plan.conf carries fs_sb_offset: $name"
+        else
+            bad "superblock plan.conf carries fs_sb_offset: $name"
+        fi
+    else
+        if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
+            --identity /identity.conf --request /req.conf >"$WORK/cmd.out" 2>&1; then
+            bad "superblock plan refuses: $name (unexpected success)"
+        else
+            ok "superblock plan refuses: $name"
+        fi
+    fi
+}
+
+sbcase f2fs-sb-first-damaged SUPPORTED 'Damaged superblock copy     : 1'
+sbcase f2fs-sb-second-damaged SUPPORTED 'Damaged superblock copy     : 2'
+sbcase f2fs-sb-both-damaged UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: userdata is not F2FS'
+sbcase f2fs-sb-field-differs SUPPORTED 'Active superblock copy'
+
 echo '== busy userdata: apply must stop before writing GPT =='
 # A bind mount of the decrypted device survives the /data unmount. Apply must
 # notice it and stop with the GPT untouched.

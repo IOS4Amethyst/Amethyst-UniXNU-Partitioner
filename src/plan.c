@@ -4,7 +4,7 @@
 #include "common.h"
 #include <ctype.h>
 
-#define PLAN_SCHEMA 1
+#define PLAN_SCHEMA 2
 
 static int req_kv(void *arg, const char *key, const char *val)
 {
@@ -378,6 +378,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "fs_blocks=%" PRIu64 "\n"
         "fs_uuid=%s\n"
         "fs_sb_offset=%u\n"
+        "fs_sb_damaged_copy=%d\n"
         "fs_feature=%u\n"
         "limit_blocks=%" PRIu64 "\n"
         "expected_blocks=%" PRIu64 "\n"
@@ -398,7 +399,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         layout.new_userdata_bytes, s.dev.metadata_index, s.dev.metadata_start_lba,
         s.dev.metadata_end_lba, s.dev.metadata_bytes, metadata_hex, primary_hex, backup_hex,
         primary_len, backup_len, 2u, backup_lba, disk_guid, s.fs.blocks, s.fs.uuid,
-        s.fs.sb_offset, s.fs.feature, limit_blocks, expected, layout.unixnu_index,
+        s.fs.sb_offset, s.fs.sb_damaged_copy, s.fs.feature, limit_blocks, expected, layout.unixnu_index,
         layout.unixnu_start, layout.unixnu_end, layout.unixnu_bytes, unix_type,
         unix_unique, user_type, user_unique, layout.userdata_attrs, layout.tail_gap_bytes,
         confirm);
@@ -530,7 +531,8 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "  \"unixnu\": {\"index\": %d, \"start_lba\": %" PRIu64 ", \"end_lba\": %" PRIu64
         ", \"bytes\": %" PRIu64 ", \"type_guid\": \"%s\", \"unique_guid\": \"%s\"},\n"
         "  \"filesystem\": {\"blocks_before\": %" PRIu64 ", \"blocks_after\": %" PRIu64
-        ", \"limit_blocks\": %" PRIu64 ", \"uuid\": \"%s\"},\n"
+        ", \"limit_blocks\": %" PRIu64 ", \"uuid\": \"%s\", \"sb_offset\": %u"
+        ", \"sb_damaged_copy\": %d},\n"
         "  \"confirm\": \"%s\"\n"
         "}\n",
         PLAN_SCHEMA, plan_id, created, s.id.serial, s.id.model, s.id.device, s.id.kernel,
@@ -539,7 +541,8 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         layout.old_userdata_bytes, layout.userdata_index, layout.userdata_start,
         layout.userdata_end, layout.new_userdata_bytes, layout.unixnu_index,
         layout.unixnu_start, layout.unixnu_end, layout.unixnu_bytes, unix_type, unix_unique,
-        s.fs.blocks, expected, limit_blocks, s.fs.uuid, confirm);
+        s.fs.blocks, expected, limit_blocks, s.fs.uuid, s.fs.sb_offset,
+        s.fs.sb_damaged_copy, confirm);
     if (n < 0 || (size_t)n >= sizeof(json) ||
         plan_path(plan_os, "plan.json", path, sizeof(path)) < 0 ||
         write_file(path, json, (size_t)n, 0600) < 0) {
@@ -665,6 +668,7 @@ static int plan_kv(void *arg, const char *key, const char *val)
     PLAN_U64(disk_bytes)
     PLAN_U32(sector)
     PLAN_U32(fs_sb_offset)
+    PLAN_I32(fs_sb_damaged_copy)
     PLAN_I32(userdata_index)
     PLAN_U64(userdata_start_lba)
     PLAN_U64(userdata_end_lba)
@@ -795,6 +799,8 @@ int plan_match_state(const plan_info_t *plan, const state_t *s, char *err, size_
         return failf(err, errlen, "F2FS features changed since planning");
     if (plan->fs_sb_offset != s->fs.sb_offset)
         return failf(err, errlen, "the active F2FS superblock changed since planning");
+    if (plan->fs_sb_damaged_copy != s->fs.sb_damaged_copy)
+        return failf(err, errlen, "an F2FS superblock copy changed since planning");
     uint8_t metadata[32];
     if (metadata_content_hash(NULL, (device_t *)&s->dev, metadata, err, errlen) < 0)
         return -1;

@@ -149,6 +149,7 @@ typedef struct {
     char volume_name[64];
     /* Start of the first superblock copy that disagrees, or 0 when they match. */
     uint32_t sb_offset;
+    int sb_damaged_copy;
     int mounted;
     uint64_t f_blocks;
     uint64_t f_bfree;
@@ -372,6 +373,7 @@ typedef struct {
     char fs_uuid[40];
     uint32_t fs_feature;
     uint32_t fs_sb_offset;
+    int fs_sb_damaged_copy;
     uint64_t limit_blocks;
     uint64_t expected_blocks;
     int unixnu_index;

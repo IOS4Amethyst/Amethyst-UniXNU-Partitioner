@@ -1,6 +1,6 @@
 Amethyst UniXNU Partitioner - read-only inspect
 Tool: amethyst-unixnu-partitioner 0.1.0
-Generated: 2026-10-28T02:11:44Z
+Generated: 2026-10-28T23:58:43Z
 
 == Device identity ==
 Device                      : amethyst
@@ -64,7 +64,7 @@ Checkpoint flags            : 0x00000000
 Checkpoint user blocks      : 123904
 Checkpoint valid blocks     : 1000
 Checkpoint free segments    : 246
-Superblock SHA-256          : be3f88e8232972dbe96ffc7b933d2e7f498e665b4638b3c70df04c43840f070e
+Superblock copies match     : yes
 
 == GPT ==
 Disk GUID                   : 11529365-8d60-a8e2-0bcb-b9cc612bb7d2

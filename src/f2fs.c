@@ -69,21 +69,23 @@ static int probe_buffer(const uint8_t *buf, uint64_t partition_bytes, f2fs_info_
                         char *err, size_t errlen)
 {
     const uint8_t *first = buf + F2FS_SUPER_OFFSET;
-    const uint8_t *s = first;
     const uint8_t *t = buf + F2FS_BLOCK_BYTES + F2FS_SUPER_OFFSET;
     memset(info, 0, sizeof(*info));
-    /* The kernel prefers the second copy, so report the newer one on a mismatch. */
-    if (le32(first) == F2FS_MAGIC && memcmp(first, t, F2FS_SUPER_SIZE)) {
-        info->sb_offset = F2FS_BLOCK_BYTES + F2FS_SUPER_OFFSET;
-        s = t;
-    } else if (le32(first) != F2FS_MAGIC || memcmp(first, t, F2FS_SUPER_SIZE)) {
-        /* One damaged copy is exactly what a torn update leaves behind. */
-        if (le32(first) != F2FS_MAGIC && le32(t) != F2FS_MAGIC)
-            return failf(err, errlen, "userdata is not F2FS");
-        return failf(err, errlen, "F2FS superblock copies disagree and neither copy is usable");
-    }
-    if (le32(s) != F2FS_MAGIC)
+    /*
+     * Mounting needs only one valid copy, and the kernel prefers the second.
+     * A damaged copy is what a torn write leaves behind, so neither copy is
+     * picked by any notion of recency: F2FS stores no version in this block.
+     */
+    int first_ok = le32(first) == F2FS_MAGIC;
+    int second_ok = le32(t) == F2FS_MAGIC;
+    if (!first_ok && !second_ok)
         return failf(err, errlen, "userdata is not F2FS");
+    const uint8_t *s = second_ok ? t : first;
+    int differs = memcmp(first, t, F2FS_SUPER_SIZE) != 0;
+    if (differs)
+        info->sb_offset = (second_ok ? F2FS_BLOCK_BYTES : 0U) + F2FS_SUPER_OFFSET;
+    if (!first_ok || !second_ok)
+        info->sb_damaged_copy = first_ok ? 2 : 1;
     uint32_t log_sectorsize = le32(s + 8);
     uint32_t log_sectors_per_block = le32(s + 12);
     uint32_t log_blocksize = le32(s + 16);
