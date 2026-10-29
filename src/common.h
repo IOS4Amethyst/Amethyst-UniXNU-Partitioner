@@ -21,13 +21,18 @@
 #include <unistd.h>
 
 #define TOOL_NAME "amethyst-unixnu-partitioner"
-#define TOOL_VERSION "0.1.0"
+#define TOOL_VERSION "0.2.0"
 #define MIB UINT64_C(1048576)
 #define GIB UINT64_C(1073741824)
 #define GPT_ENTRY_SIZE 128U
 #define GPT_MIN_TABLE_BYTES 16384U
 #define MAX_GPT_ENTRIES 4096U
 #define F2FS_BLOCK_BYTES 4096U
+
+/* sheng keeps its Data store and diagnostic log in the last 1 GiB of userdata
+ * (NativeUfs.cpp kDefaultReserveMiB), so a split must leave that inside
+ * userdata rather than handing it to unixnu. */
+#define F2FS_RESERVE_MIB_DEFAULT 1024U
 
 /* F2FS checkpoint flags (struct f2fs_checkpoint, ckpt_flags at byte 132). */
 #define F2FS_CP_FLAG_UMOUNT   0x00000001U
@@ -305,7 +310,7 @@ int gpt_entry_count_used(const gpt_t *gpt);
 int gpt_free_entry(const gpt_t *gpt, uint32_t *index);
 int gpt_validate_identity(const gpt_t *gpt, const device_t *dev, char *err, size_t errlen);
 int gpt_make_layout(const gpt_t *gpt, int userdata_index, uint64_t requested_bytes,
-                    uint64_t min_userdata_bytes, layout_t *layout,
+                    uint64_t reserve_bytes, uint64_t min_userdata_bytes, layout_t *layout,
                     uint8_t **primary_out, size_t *primary_len_out,
                     uint8_t **backup_out, size_t *backup_len_out,
                     char *err, size_t errlen);
@@ -345,11 +350,13 @@ int device_partition_geometry(const paths_t *p, const char *name, uint32_t secto
 
 typedef struct {
     char size[64];
+    char reserve[64];
     char plan_dir[PATH_MAX];
     char mode[32];
     char plan[PATH_MAX];
     char confirm[512];
     int acknowledge_data_loss;
+    int reserve_set;
 } request_t;
 
 typedef struct {
@@ -387,6 +394,7 @@ typedef struct {
     int fs_sb_damaged_copy;
     uint64_t limit_blocks;
     uint64_t expected_blocks;
+    uint64_t reserve_mib;      /* MiB kept inside userdata above unixnu (sheng store/log) */
     int unixnu_index;
     uint64_t unixnu_start_lba;
     uint64_t unixnu_end_lba;

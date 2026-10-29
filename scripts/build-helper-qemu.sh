@@ -12,6 +12,9 @@
 #   ROOTFS    Alpine aarch64 minirootfs with gcc, binutils and musl-dev
 #   QEMU      qemu-aarch64 static binary (qemu-user)
 #   OUTPUT    helper path (default: out/partitioner)
+#
+# Keep both under a scratch directory you own (for example ../.scratch) rather
+# than a shared /tmp: /tmp is often tmpfs, shared, and easy to fill.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

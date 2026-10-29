@@ -123,6 +123,44 @@ Capacity on this device is comfortable: 465.156 GiB of `userdata` with
 - `CKPT_FLAG_RESIZEFS` and `CKPT_FLAG_FSCK` now refuse rather than being defined
   and ignored, since both describe allocation metadata that shrinking moves.
 
+### Fourth run: the checkpoint fix verified on hardware
+
+Run 4 (`2026-10-29T06:29:54Z`) was the first with the validity-before-version
+checkpoint selection. It chose the other copy, confirming the fix against real
+bytes:
+
+| | Run 3 (05:26) | Run 4 (06:29) |
+| --- | --- | --- |
+| Active checkpoint copy | first (stale) | **second** |
+| Checkpoint version | 393237468 | 393237689 |
+| Valid blocks | 9,066,588 | 9,059,756 |
+| Free blocks | 112,279,460 | 112,286,292 |
+
+Run 3 was selecting a copy 221 checkpoints stale. Android wrote between the
+runs, so the version advanced and valid blocks dropped by ~6,800, as expected
+for an idle recovery. Result stayed `SUPPORTED WITH WARNINGS` with no
+`UNSUPPORTED` condition. `Checkpoint user blocks` (121,378,816) is the
+filesystem's *total* capacity counter, not free space; statfs `available`
+(112,286,292) is the free figure.
+
+### `size_gib` and the sheng reserve
+
+`size_gib` is chosen by the operator; the tool does not hardcode a size. It
+also takes `reserve_mib` (default 1024), because sheng keeps its Data store and
+diagnostic log in the last 1 GiB of userdata
+(`kDefaultReserveMiB` in `drivers/ShengUfs/NativeUfs.cpp`). `unixnu` is placed
+*below* that reserve instead of at the partition's true end, so the two never
+overlap. Measured offline against this device's geometry:
+
+| Request | `unixnu` LBAs | `unixnu` | userdata left |
+| --- | --- | --- | --- |
+| 128 GiB, reserve 0 | 90922752..124477183 | 128.000000 GiB | 346.83 GiB |
+| 128 GiB, reserve 1024 | 90660608..124215039 | 128.000000 GiB | 345.83 GiB |
+
+Both keep userdata at its real end (124477434), leave `unixnu` flush against
+the shrunken userdata, and leave the reserve inside the `userdata` entry.
+`reserve_mib = 0` reproduces the upstream reference layout byte-for-byte.
+
 ### What is still unproven on hardware
 
 | Area | Result |

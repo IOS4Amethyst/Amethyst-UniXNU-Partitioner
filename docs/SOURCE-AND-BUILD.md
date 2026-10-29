@@ -88,6 +88,12 @@ ROOTFS=/path/to/alpine-aarch64-rootfs QEMU=/path/to/qemu-aarch64 \
     ./scripts/build-helper-qemu.sh
 ```
 
+Keep the rootfs and qemu binary under a scratch directory you own (for example
+`../.scratch/`), not a shared `/tmp`. On many systems `/tmp` is a small tmpfs;
+the test suite builds multi-gigabyte sparse fixtures, and a full tmpfs fails
+with `No space left on device` in the middle of a run. `tests/run_tests.sh`
+honours `TEST_WORKDIR` and otherwise uses a directory beside the repository.
+
 That script does not use GCC's cross driver, because GCC cannot exec `cc1`, `as`
 or `collect2` from a foreign architecture. It invokes `cc1` and `as` directly and
 links with the aarch64 `ld` and an explicit crt/libc chain, then checks the ELF

@@ -89,7 +89,9 @@ def main():
     host_bin = str(REPO / 'build' / 'partitioner-host')
     disk = root / 'dev' / 'block' / 'sda'
     sector = fx.SECTOR
-    total = fx.TOTAL
+    # Derive the disk's real size from the file, so the comparison works for a
+    # fixture built at any scale rather than the module's default TOTAL.
+    total = disk.stat().st_size // sector
 
     # --- upstream layout for exactly this starting GPT ---------------------
     gpt, p_before, b_before = load_upstream_gpt(disk, sector, total)
@@ -103,7 +105,10 @@ def main():
         raise SystemExit(f'{plan_dir} already exists')
     req = plans / 'request.conf'
     gib = requested / (1 << 30)
-    req.write_text(f'mode = plan\nsize_gib = {gib!r}\nplan_dir = /plans/differential\n')
+    # Upstream has no sheng-reserve concept, so compare with the reserve
+    # disabled: reserve_mib=0 must reproduce upstream's geometry exactly.
+    req.write_text(f'mode = plan\nsize_gib = {gib!r}\nreserve_mib = 0\n'
+                   f'plan_dir = /plans/differential\n')
 
     env = dict(os.environ)
     env['UNIXNU_TEST_STATFS'] = str(root / 'fixtures' / 'statfs')
@@ -135,7 +140,11 @@ def main():
 
     limit = layout['new_userdata_bytes'] // 4096
     check('limit_blocks', int(conf['limit_blocks']), limit)
-    up_expected = expected_blocks_upstream(fx.FS_BLOCKS, limit)
+    # Read the filesystem's block count from the fixture itself, not the
+    # generator's module default, so any fixture scale is compared correctly.
+    fs_blocks = int((root / 'fixtures' / 'statfs').read_text()
+                    .split('blocks=')[1].split()[0])
+    up_expected = expected_blocks_upstream(fs_blocks, limit)
     check('expected_blocks', int(conf['expected_blocks']), up_expected)
     check('userdata_type_guid', conf['userdata_type_guid'],
           str(uuid.UUID(bytes_le=gpt.table[(fx.USERDATA_INDEX - 1) * 128:

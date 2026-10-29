@@ -5,7 +5,11 @@ set -uo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/amethyst-unixnu-tests.XXXXXX") || exit 1
+# The suite builds several multi-GiB sparse fixtures; tmpfs (/tmp) is often too
+# small and a full one fails with a misleading "no space left" mid-run. Prefer
+# real disk: honour TEST_WORKDIR, else a directory beside the repo.
+TEST_WORKDIR=${TEST_WORKDIR:-${TMPDIR:-$(dirname "$ROOT")}}
+WORK=$(mktemp -d "$TEST_WORKDIR/amethyst-unixnu-tests.XXXXXX") || exit 1
 FIX="$WORK/fixture"
 HOST="build/partitioner-host"
 PASS=0
@@ -63,7 +67,9 @@ expect_ok 'host selftest passes' "$HOST" selftest
 expect_contains 'host selftest prints PASS' "$WORK/cmd.out" 'SELFTEST PASS'
 
 echo '== fixture =='
-expect_ok 'fixture creates' python3 tests/make_fixture.py "$FIX"
+# 2 GiB of sectors: the default 1024 MiB sheng reserve plus a 64 MiB unixnu
+# must fit, which a 512 MiB disk cannot express. The file is sparse.
+expect_ok 'fixture creates' python3 tests/make_fixture.py "$FIX" --sectors=524288
 if [ ! -d "$FIX/dev/block" ]; then
     echo 'fixture missing; aborting'
     exit 1
@@ -173,10 +179,15 @@ fi
 U_START=$(sed -n 's/^userdata_start_lba=//p' "$FIX/plans/p1/plan.conf")
 U_END=$(sed -n 's/^userdata_new_end_lba=//p' "$FIX/plans/p1/plan.conf")
 X_START=$(sed -n 's/^unixnu_start_lba=//p' "$FIX/plans/p1/plan.conf")
-if [ "$U_START" = 2048 ] && [ "$U_END" = 114431 ] && [ "$X_START" = 114432 ]; then
+X_END=$(sed -n 's/^unixnu_end_lba=//p' "$FIX/plans/p1/plan.conf")
+U_ORIG_END=$(sed -n 's/^userdata_end_lba=//p' "$FIX/plans/p1/plan.conf")
+# The split keeps userdata's start and its real end, puts unixnu flush below
+# the shrunken userdata, and leaves the 1024 MiB sheng reserve above unixnu.
+if [ "$U_START" = 2048 ] && [ "$X_START" = $((U_END + 1)) ] \
+    && [ "$U_ORIG_END" = 524282 ] && [ $(( (U_ORIG_END - X_END) * 4096 )) -ge $((1024 * 1024 * 1024)) ]; then
     ok 'plan geometry preserves the userdata start and splits at the tail'
 else
-    bad 'plan geometry preserves the userdata start and splits at the tail'
+    bad "plan geometry preserves the userdata start and splits at the tail (start=$U_START u_end=$U_END x_start=$X_START x_end=$X_END orig_end=$U_ORIG_END)"
 fi
 
 CONFIRM=$(sed -n 's/^confirm=//p' "$FIX/plans/p1/plan.conf")
@@ -379,6 +390,95 @@ cpcase f2fs-cp-first-damaged SUPPORTED 'Damaged checkpoint copy     : 1'
 cpcase f2fs-cp-resizefs-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS was left mid-resize'
 cpcase f2fs-cp-fsck-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS is marked for fsck'
 
+echo '== choosable size with the sheng reserve (realistic 465 GiB userdata) =='
+# sheng keeps its Data store and diagnostic log in the last 1 GiB of userdata,
+# so a split must leave that region inside userdata. These cases use the real
+# Amethyst geometry (userdata 2539520..124477434, 4096-byte sectors) so a
+# 128 GiB request plus a 1024 MiB reserve fits, which the 512 MiB fixture
+# cannot express.
+RSV="$WORK/reserve"
+mkdir -p "$RSV"
+expect_ok 'reserve fixture creates at real geometry' \
+    python3 tests/make_fixture.py "$RSV/f" --sectors=124477440
+if [ -d "$RSV/f/dev/block" ]; then
+    reserve_plan() {
+        local name=$1 size=$2 reserve=$3
+        mkdir -p "$RSV/f/plans/$name"
+        printf 'mode = plan\nsize_gib = %s\n%splan_dir = /plans/%s\n' "$size" \
+            "${reserve:+reserve_mib = $reserve
+}" "$name" >"$RSV/f/plans/$name.conf"
+        UNIXNU_TEST_STATFS="$RSV/f/fixtures/statfs" "$HOST" plan --root "$RSV/f" \
+            --identity /identity.conf --request "/plans/$name.conf"
+    }
+    conf_get() { sed -n "s/^$2=//p" "$RSV/f/plans/$1/plan.conf"; }
+
+    expect_ok 'plan 128 GiB with default reserve succeeds' reserve_plan r-default 128 ''
+    if [ -f "$RSV/f/plans/r-default/plan.conf" ]; then
+        # Default is 1024 MiB because kDefaultReserveMiB is 1024: forgetting
+        # the key must not be the dangerous case.
+        [ "$(conf_get r-default reserve_mib)" = 1024 ] \
+            && ok 'default reserve is 1024 MiB' \
+            || bad "default reserve is 1024 MiB (got $(conf_get r-default reserve_mib))"
+        [ "$(conf_get r-default unixnu_bytes)" = 137438953472 ] \
+            && ok 'default-reserve unixnu is exactly 128 GiB' \
+            || bad 'default-reserve unixnu is exactly 128 GiB'
+        # The reserve must still be inside userdata: the partition keeps its
+        # real end, and unixnu stops at least 1024 MiB below it.
+        ud_end=; ux_end=; gap_mib=
+        ud_end=$(conf_get r-default userdata_end_lba)
+        ux_end=$(conf_get r-default unixnu_end_lba)
+        gap_mib=$(( (ud_end - ux_end) * 4096 / 1048576 ))
+        [ "$ud_end" = 124477434 ] \
+            && ok 'reserve keeps the userdata entry at its real end' \
+            || bad "reserve keeps the userdata entry at its real end (got $ud_end)"
+        [ "$gap_mib" -ge 1024 ] \
+            && ok "reserve leaves ${gap_mib} MiB of userdata above unixnu" \
+            || bad "reserve leaves >=1024 MiB above unixnu (got ${gap_mib})"
+        # The shrink limit must be derived from the shrunken userdata, not the
+        # full partition, or apply would size F2FS over unixnu.
+        lim_ok=
+        lim_ok=$(( $(conf_get r-default limit_blocks) * 4096 < $(conf_get r-default userdata_new_bytes) + 4096 ))
+        [ "$lim_ok" = 1 ] \
+            && ok 'F2FS limit tracks the shrunken userdata' \
+            || bad 'F2FS limit tracks the shrunken userdata'
+    fi
+
+    expect_ok 'plan 128 GiB with reserve 0 succeeds' reserve_plan r-zero 128 0
+    if [ -f "$RSV/f/plans/r-zero/plan.conf" ]; then
+        [ "$(conf_get r-zero reserve_mib)" = 0 ] \
+            && ok 'explicit reserve 0 is honoured' \
+            || bad 'explicit reserve 0 is honoured'
+        # 0 vs 1024 must move the boundary by exactly 1 GiB, and by nothing else.
+        d=0
+        d=$(( $(conf_get r-default unixnu_start_lba) + 262144 ))
+        [ "$d" = "$(conf_get r-zero unixnu_start_lba)" ] \
+            && ok 'the reserve shifts the boundary by exactly the reserve' \
+            || bad "the reserve shifts the boundary by exactly the reserve (got $d vs $(conf_get r-zero unixnu_start_lba))"
+        [ "$(conf_get r-zero unixnu_bytes)" = 137438953472 ] \
+            && ok 'reserve 0 still gives exactly 128 GiB' \
+            || bad 'reserve 0 still gives exactly 128 GiB'
+    fi
+
+    expect_fail 'plan refuses a reserve larger than userdata' reserve_plan r-toobig 128 524288
+    expect_contains 'oversized reserve explains itself' "$WORK/cmd.out" \
+        'reserve_mib leaves no usable userdata'
+
+    expect_fail 'plan refuses a non-numeric reserve' reserve_plan r-text 128 1G
+
+    # A bundle whose reserve does not cover the gap must be rejected on load,
+    # so a hand-edited plan cannot hand sheng's tail to unixnu.
+    if cp -a "$RSV/f/plans/r-default" "$RSV/f/plans/r-tampered" 2>/dev/null; then
+        sed -i 's/^reserve_mib=.*/reserve_mib=4096/' "$RSV/f/plans/r-tampered/plan.conf"
+        if (cd "$RSV/f/plans/r-tampered" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
+            bad 'tampered reserve is detected'
+        else
+            ok 'tampered reserve breaks the bundle checksum'
+        fi
+    fi
+else
+    bad 'reserve fixture creates at real geometry'
+fi
+
 echo '== busy userdata: apply must stop before writing GPT =='
 # A bind mount of the decrypted device survives the /data unmount. Apply must
 # notice it and stop with the GPT untouched.
@@ -422,7 +522,7 @@ inject_case() {
     local name=$1 env_name=$2 env_value=$3 want_stage=$4 want_msg=$5
     local dir="$WORK/inject/$name"
     rm -rf "$dir"
-    if ! python3 tests/make_fixture.py "$dir" >"$WORK/cmd.out" 2>&1; then
+    if ! python3 tests/make_fixture.py "$dir" --sectors=524288 >"$WORK/cmd.out" 2>&1; then
         bad "injection fixture builds: $name"
         return
     fi
@@ -577,8 +677,13 @@ if [ -x out/partitioner ]; then
     else
         skip 'strings is not available'
     fi
-    if [ -z "${QEMU_AARCH64:-}" ] && [ -x /tmp/opencode/qemupkg/usr/bin/qemu-aarch64 ]; then
-        QEMU_AARCH64=/tmp/opencode/qemupkg/usr/bin/qemu-aarch64
+    # QEMU_AARCH64 may be set by the caller; otherwise look next to the repo in
+    # a scratch directory the caller owns, never in a shared /tmp path.
+    if [ -z "${QEMU_AARCH64:-}" ]; then
+        for q in "$(dirname "$ROOT")/.scratch/qemu-aarch64.bin" \
+                 "$(dirname "$ROOT")/.scratch/qemupkg/usr/bin/qemu-aarch64"; do
+            [ -x "$q" ] && { QEMU_AARCH64=$q; break; }
+        done
     fi
     if [ -n "${QEMU_AARCH64:-}" ] && [ -x "$QEMU_AARCH64" ]; then
         expect_ok 'static helper selftest runs under qemu' "$QEMU_AARCH64" out/partitioner selftest

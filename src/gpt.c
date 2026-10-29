@@ -358,7 +358,7 @@ int gpt_check_basic_layout(const gpt_t *gpt, int userdata_index, char *detail, s
 }
 
 int gpt_make_layout(const gpt_t *gpt, int userdata_index, uint64_t requested_bytes,
-                    uint64_t min_userdata_bytes, layout_t *layout,
+                    uint64_t reserve_bytes, uint64_t min_userdata_bytes, layout_t *layout,
                     uint8_t **primary_out, size_t *primary_len_out,
                     uint8_t **backup_out, size_t *backup_len_out,
                     char *err, size_t errlen)
@@ -366,6 +366,8 @@ int gpt_make_layout(const gpt_t *gpt, int userdata_index, uint64_t requested_byt
     memset(layout, 0, sizeof(*layout));
     if (!requested_bytes || requested_bytes % MIB)
         return failf(err, errlen, "requested unixnu size must use whole MiB");
+    if (reserve_bytes % MIB)
+        return failf(err, errlen, "reserve_mib must resolve to whole MiB");
     if (requested_bytes % gpt->sector)
         return failf(err, errlen, "requested size is not sector aligned");
     const gpt_entry_t *u = gpt_entry_by_index(gpt, (uint32_t)userdata_index);
@@ -390,6 +392,11 @@ int gpt_make_layout(const gpt_t *gpt, int userdata_index, uint64_t requested_byt
     if (!end)
         return failf(err, errlen, "cannot align the end of userdata");
     end -= 1;
+    /* Keep the reserve in userdata: unixnu starts below it, never inside it. */
+    uint64_t reserve_sectors = reserve_bytes / gpt->sector;
+    if (reserve_sectors >= end + 1 - u->start)
+        return failf(err, errlen, "reserve_mib leaves no usable userdata");
+    end -= reserve_sectors;
     uint64_t request_sectors = requested_bytes / gpt->sector;
     if (request_sectors > end + 1)
         return failf(err, errlen, "requested size is larger than the available tail");

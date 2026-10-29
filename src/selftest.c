@@ -214,7 +214,7 @@ static void test_gpt_layout(void)
     CHECK(!strcmp(g.entries[0].name, "userdata"));
 
     memset(&layout, 0, sizeof(layout));
-    CHECK(gpt_make_layout(&g, 1, 128 * MIB, MIB, &layout, &pa, &pal, &ba, &bal,
+    CHECK(gpt_make_layout(&g, 1, 128 * MIB, 0, MIB, &layout, &pa, &pal, &ba, &bal,
                           err, sizeof(err)) == 0);
     if (!failures) {
         CHECK(layout.unixnu_start == layout.userdata_end + 1);

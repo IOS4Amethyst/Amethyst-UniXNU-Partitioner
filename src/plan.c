@@ -11,6 +11,9 @@ static int req_kv(void *arg, const char *key, const char *val)
     request_t *r = arg;
     if (!strcmp(key, "size_gib") || !strcmp(key, "size")) {
         snprintf(r->size, sizeof(r->size), "%s", val);
+    } else if (!strcmp(key, "reserve_mib")) {
+        snprintf(r->reserve, sizeof(r->reserve), "%s", val);
+        r->reserve_set = 1;
     } else if (!strcmp(key, "plan_dir")) {
         snprintf(r->plan_dir, sizeof(r->plan_dir), "%s", val);
     } else if (!strcmp(key, "mode")) {
@@ -197,6 +200,19 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         return -1;
     uint64_t requested = mib * MIB;
 
+    /*
+     * The reserve stays inside the userdata entry and is never given to
+     * unixnu. sheng keeps its Data store and diagnostic log in the last
+     * kDefaultReserveMiB of userdata, so a split that reached the partition's
+     * true end would hand those blocks to the other OS.
+     */
+    uint64_t reserve_mib = F2FS_RESERVE_MIB_DEFAULT;
+    if (req->reserve_set && parse_u64(req->reserve, &reserve_mib) < 0)
+        return failf(err, errlen, "reserve_mib must be a whole number of MiB");
+    if (reserve_mib > UINT32_MAX)
+        return failf(err, errlen, "reserve_mib is unreasonably large");
+    uint64_t reserve = reserve_mib * MIB;
+
     state_t s;
     if (state_collect(p, &s, 1, err, errlen) < 0) {
         state_free(&s);
@@ -223,7 +239,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
     uint8_t *primary = NULL, *backup = NULL;
     size_t primary_len = 0, backup_len = 0;
     layout_t layout;
-    if (gpt_make_layout(&s.gpt, s.dev.userdata_index, requested, MIB, &layout,
+    if (gpt_make_layout(&s.gpt, s.dev.userdata_index, requested, reserve, MIB, &layout,
                         &primary, &primary_len, &backup, &backup_len, err, errlen) < 0) {
         state_free(&s);
         return -1;
@@ -382,6 +398,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "fs_feature=%u\n"
         "limit_blocks=%" PRIu64 "\n"
         "expected_blocks=%" PRIu64 "\n"
+        "reserve_mib=%" PRIu64 "\n"
         "unixnu_index=%d\n"
         "unixnu_start_lba=%" PRIu64 "\n"
         "unixnu_end_lba=%" PRIu64 "\n"
@@ -399,7 +416,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         layout.new_userdata_bytes, s.dev.metadata_index, s.dev.metadata_start_lba,
         s.dev.metadata_end_lba, s.dev.metadata_bytes, metadata_hex, primary_hex, backup_hex,
         primary_len, backup_len, 2u, backup_lba, disk_guid, s.fs.blocks, s.fs.uuid,
-        s.fs.sb_offset, s.fs.sb_damaged_copy, s.fs.feature, limit_blocks, expected, layout.unixnu_index,
+        s.fs.sb_offset, s.fs.sb_damaged_copy, s.fs.feature, limit_blocks, expected, reserve_mib, layout.unixnu_index,
         layout.unixnu_start, layout.unixnu_end, layout.unixnu_bytes, unix_type,
         unix_unique, user_type, user_unique, layout.userdata_attrs, layout.tail_gap_bytes,
         confirm);
@@ -431,6 +448,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "UNIXNU_BYTES='%" PRIu64 "'\n"
         "LIMIT_BLOCKS='%" PRIu64 "'\n"
         "EXPECTED_BLOCKS='%" PRIu64 "'\n"
+        "RESERVE_MIB='%" PRIu64 "'\n"
         "DISK='%s'\n"
         "DISK_BYTES='%" PRIu64 "'\n"
         "SECTOR='%u'\n"
@@ -438,7 +456,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "GPT_BACKUP_LBA='%" PRIu64 "'\n",
         plan_id, confirm, layout.unixnu_bytes, layout.userdata_index, layout.userdata_start,
         layout.new_userdata_bytes, layout.unixnu_index, layout.unixnu_start, layout.unixnu_end,
-        layout.unixnu_bytes, limit_blocks, expected, s.dev.disk, s.dev.disk_bytes, s.dev.sector,
+        layout.unixnu_bytes, limit_blocks, expected, reserve_mib, s.dev.disk, s.dev.disk_bytes, s.dev.sector,
         s.id.serial, backup_lba);
     if (n < 0 || (size_t)n >= sizeof(env) ||
         plan_path(plan_os, "plan.env", path, sizeof(path)) < 0 ||
@@ -469,6 +487,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "\n"
         "Planned unixnu: index %d, LBA %" PRIu64 "..%" PRIu64 ", %s\n"
         "Remaining userdata: LBA %" PRIu64 "..%" PRIu64 ", %s\n"
+        "Reserved inside userdata above unixnu: %" PRIu64 " MiB (sheng Data store and log)\n"
         "Alignment gap after unixnu: %s\n"
         "unixnu type GUID: %s\n"
         "unixnu unique GUID: %s\n"
@@ -502,7 +521,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         layout.userdata_index, layout.userdata_start, s.dev.userdata_end_lba, old_sz,
         s.dev.metadata_index, s.dev.metadata_start_lba, s.dev.metadata_end_lba,
         layout.unixnu_index, layout.unixnu_start, layout.unixnu_end, unix_sz,
-        layout.userdata_start, layout.userdata_end, new_sz, gap_sz,
+        layout.userdata_start, layout.userdata_end, new_sz, reserve_mib, gap_sz,
         unix_type, unix_unique, s.fs.blocks, expected, limit_blocks, s.fs.f_bavail, confirm);
     if (n < 0 || (size_t)n >= sizeof(txt) ||
         plan_path(plan_os, "plan.txt", path, sizeof(path)) < 0 ||
@@ -533,6 +552,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         "  \"filesystem\": {\"blocks_before\": %" PRIu64 ", \"blocks_after\": %" PRIu64
         ", \"limit_blocks\": %" PRIu64 ", \"uuid\": \"%s\", \"sb_offset\": %u"
         ", \"sb_damaged_copy\": %d},\n"
+        "  \"reserve_mib\": %" PRIu64 ",\n"
         "  \"confirm\": \"%s\"\n"
         "}\n",
         PLAN_SCHEMA, plan_id, created, s.id.serial, s.id.model, s.id.device, s.id.kernel,
@@ -542,7 +562,7 @@ static int run_plan(const paths_t *p, const request_t *req, const char *plan_os,
         layout.userdata_end, layout.new_userdata_bytes, layout.unixnu_index,
         layout.unixnu_start, layout.unixnu_end, layout.unixnu_bytes, unix_type, unix_unique,
         s.fs.blocks, expected, limit_blocks, s.fs.uuid, s.fs.sb_offset,
-        s.fs.sb_damaged_copy, confirm);
+        s.fs.sb_damaged_copy, reserve_mib, confirm);
     if (n < 0 || (size_t)n >= sizeof(json) ||
         plan_path(plan_os, "plan.json", path, sizeof(path)) < 0 ||
         write_file(path, json, (size_t)n, 0600) < 0) {
@@ -687,6 +707,7 @@ static int plan_kv(void *arg, const char *key, const char *val)
     PLAN_U32(fs_feature)
     PLAN_U64(limit_blocks)
     PLAN_U64(expected_blocks)
+    PLAN_U64(reserve_mib)
     PLAN_I32(unixnu_index)
     PLAN_U64(unixnu_start_lba)
     PLAN_U64(unixnu_end_lba)
@@ -730,6 +751,16 @@ int plan_load(const char *plan_dir, plan_info_t *plan, char *err, size_t errlen)
         return failf(err, errlen, "plan has inconsistent userdata size");
     if (plan->limit_blocks != plan->userdata_new_bytes / F2FS_BLOCK_BYTES)
         return failf(err, errlen, "plan has inconsistent F2FS limit");
+    /*
+     * The reserve must still fit between the top of unixnu and the partition's
+     * real end, in whole MiB: that tail is sheng's Data store and log, and it
+     * stays part of userdata. A plan whose reserve does not cover the gap would
+     * hand those blocks to unixnu.
+     */
+    uint64_t gap_sectors = plan->userdata_end_lba - plan->unixnu_end_lba;
+    if (plan->reserve_mib > UINT64_MAX / MIB / plan->sector ||
+        gap_sectors < plan->reserve_mib * MIB / plan->sector)
+        return failf(err, errlen, "plan reserve does not cover the tail of userdata");
     return 0;
 }
 

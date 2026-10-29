@@ -144,14 +144,34 @@ def symlink(path, target):
     os.symlink(target, path)
 
 
+def rescale(total):
+    """Resize the synthetic disk. The GPT stays valid: header, tables and
+    userdata end are all derived from TOTAL, so a larger total only grows the
+    userdata tail. The filesystem keeps its real ratio of free space (the
+    original fixture is ~78% free), which is what a healthy, lightly used
+    userdata looks like at any capacity."""
+    global TOTAL, LAST, USERDATA_END, FS_BLOCKS, FS_BFREE, FS_BAVAIL
+    TOTAL = total
+    LAST = TOTAL - 1 - BLOCKS - 1
+    USERDATA_END = LAST
+    FS_BLOCKS = (USERDATA_END - USERDATA_START + 1)
+    FS_BFREE = FS_BLOCKS * 110000 // 128000
+    FS_BAVAIL = FS_BLOCKS * 100000 // 128000
+
+
 def main():
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if len(args) != 1:
         print(__doc__, file=sys.stderr)
+        print("usage: make_fixture.py ROOT [--sectors N]", file=sys.stderr)
         return 2
-    root = os.path.abspath(sys.argv[1])
+    root = os.path.abspath(args[0])
     if os.path.exists(root):
         print(f"refusing to reuse {root}", file=sys.stderr)
         return 2
+    for a in sys.argv[1:]:
+        if a.startswith("--sectors="):
+            rescale(int(a.split("=", 1)[1]))
     os.makedirs(root)
 
     disk_bytes = TOTAL * SECTOR
