@@ -1,6 +1,6 @@
 Amethyst UniXNU Partitioner - read-only inspect
 Tool: amethyst-unixnu-partitioner 0.1.0
-Generated: 2026-10-28T23:58:43Z
+Generated: 2026-10-29T05:42:41Z
 
 == Device identity ==
 Device                      : amethyst

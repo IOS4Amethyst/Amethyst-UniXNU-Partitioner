@@ -239,13 +239,19 @@ static void print_fs(report_t *r, const state_t *s)
     rp_kv(r, "Features", "0x%08x%s%s", fs->feature,
           fs->encrypt_feature ? " encrypt" : "", fs->zoned ? " zoned" : "");
     rp_kv(r, "Checkpoint copies match", "%s", fs->cp_copies_match ? "yes" : "no");
-    if (!fs->cp_copies_match)
-        rp_kv(r, "Newest checkpoint", "%s", fs->cp1_newer ? "second copy" : "first copy");
+    if (fs->cp_damaged_copy)
+        rp_kv(r, "Damaged checkpoint copy", "%d (the other copy is used)", fs->cp_damaged_copy);
+    else if (!fs->cp_copies_match)
+        rp_kv(r, "Active checkpoint copy", "%s (higher checkpoint_ver)",
+              fs->cp1_newer ? "second" : "first");
     rp_kv(r, "Checkpoint version", "%" PRIu64, fs->cp_version);
-    rp_kv(r, "Checkpoint flags", "0x%08x%s%s%s", fs->ckpt_flags,
-          (fs->ckpt_flags & 0x00001000U) ? " disabled" : "",
-          (fs->ckpt_flags & 0x00000008U) ? " error" : "",
-          (fs->ckpt_flags & 0x00000001U) ? " umount" : "");
+    rp_kv(r, "Checkpoint flags", "0x%08x%s%s%s%s%s%s", fs->ckpt_flags,
+          (fs->ckpt_flags & F2FS_CP_FLAG_DISABLED) ? " disabled" : "",
+          (fs->ckpt_flags & F2FS_CP_FLAG_ERROR) ? " error" : "",
+          (fs->ckpt_flags & F2FS_CP_FLAG_FSCK) ? " fsck" : "",
+          (fs->ckpt_flags & F2FS_CP_FLAG_RESIZEFS) ? " resize-in-progress" : "",
+          (fs->ckpt_flags & F2FS_CP_FLAG_UMOUNT) ? " umount" : "",
+          (fs->ckpt_flags & F2FS_CP_FLAG_ORPHAN) ? " orphan" : "");
     rp_kv(r, "Checkpoint user blocks", "%" PRIu64, fs->cp_user_blocks);
     rp_kv(r, "Checkpoint valid blocks", "%" PRIu64, fs->cp_valid_blocks);
     rp_kv(r, "Checkpoint free segments", "%u", fs->cp_free_segments);

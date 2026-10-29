@@ -337,6 +337,48 @@ sbcase f2fs-sb-second-damaged SUPPORTED 'Damaged superblock copy     : 2'
 sbcase f2fs-sb-both-damaged UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: userdata is not F2FS'
 sbcase f2fs-sb-field-differs SUPPORTED 'Active superblock copy'
 
+echo '== F2FS checkpoint pair: validity beats version, bad states refuse =='
+# A torn copy can hold any version number, so the copy with the higher
+# checkpoint_ver is only trusted once it looks like a checkpoint at all.
+cpcase() {
+    local name=$1 want=$2 want_text=$3
+    local dir="$WORK/corrupt/$name"
+    if ! python3 tests/corrupt_fixture.py "$FIX" "$dir" "$name" >"$WORK/cmd.out" 2>&1; then
+        bad "checkpoint fixture builds: $name"
+        tail -5 "$WORK/cmd.out" | sed 's/^/    /'
+        return
+    fi
+    ok "checkpoint fixture builds: $name"
+    mkdir -p "$dir/reports"
+    UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" inspect --root "$dir" \
+        --identity /identity.conf --out /reports/i.txt >"$WORK/cmd.out" 2>&1
+    if grep -Fq "RESULT: $want" "$dir/reports/i.txt"; then
+        ok "checkpoint inspect result is $want: $name"
+    else
+        bad "checkpoint inspect result is $want: $name"
+        grep -m3 'RESULT:\|UNSUPPORTED' "$dir/reports/i.txt" | sed 's/^/    /'
+    fi
+    if ! grep -Fq -- "$want_text" "$dir/reports/i.txt"; then
+        bad "checkpoint report says '$want_text': $name"
+    else
+        ok "checkpoint report says '$want_text': $name"
+    fi
+    if [ "$want" = SUPPORTED ]; then
+        # The damaged copy's version outranks the good one; the good version
+        # must still be the one reported, or a garbage block was selected.
+        if grep -Fq 'Checkpoint version          : 7' "$dir/reports/i.txt"; then
+            ok "checkpoint uses the valid copy's version: $name"
+        else
+            bad "checkpoint uses the valid copy's version: $name"
+            grep 'Checkpoint version' "$dir/reports/i.txt" | sed 's/^/    /'
+        fi
+    fi
+}
+
+cpcase f2fs-cp-first-damaged SUPPORTED 'Damaged checkpoint copy     : 1'
+cpcase f2fs-cp-resizefs-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS was left mid-resize'
+cpcase f2fs-cp-fsck-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS is marked for fsck'
+
 echo '== busy userdata: apply must stop before writing GPT =='
 # A bind mount of the decrypted device survives the /data unmount. Apply must
 # notice it and stop with the GPT untouched.

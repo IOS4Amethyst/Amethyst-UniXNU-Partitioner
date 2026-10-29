@@ -23,6 +23,13 @@ Modes:
     f2fs-multi-seg    set segments_per_section to 2
     f2fs-multi-dev    set the devs[0].path field so F2FS looks multi-device
     f2fs-oversize     claim more F2FS blocks than userdata can hold
+    f2fs-sb-first-damaged   clear the first superblock copy's magic
+    f2fs-sb-second-damaged  clear the second superblock copy's magic
+    f2fs-sb-both-damaged    clear both superblock magics
+    f2fs-sb-field-differs   both superblocks valid but one harmless byte differs
+    f2fs-cp-first-damaged   torn first checkpoint with a higher version
+    f2fs-cp-resizefs-flag   set CKPT_FLAG_RESIZEFS (interrupted resize)
+    f2fs-cp-fsck-flag       set CKPT_FLAG_FSCK (needs repair)
     busy-bind         add a bind mount of the decrypted device under /data
 """
 import os
@@ -58,6 +65,22 @@ def write_region(path, offset, data):
     with open(path, 'r+b') as f:
         f.seek(offset)
         f.write(bytes(data))
+
+
+def locate_checkpoints(path):
+    """Return the byte offsets of both F2FS checkpoint copies.
+
+    cp_blkaddr and blocks_per_seg come from the superblock, so the fixture
+    follows whatever the generator wrote instead of duplicating its numbers.
+    """
+    sb = read_region(path, 1024, 3072)
+    if struct.unpack_from('<I', sb, 0)[0] != 0xf2f52010:
+        raise SystemExit('fixture userdata is not F2FS')
+    cp_blkaddr = struct.unpack_from('<I', sb, 76)[0]
+    blocks_per_seg = 1 << struct.unpack_from('<I', sb, 20)[0]
+    block = 1 << struct.unpack_from('<I', sb, 16)[0]
+    first = cp_blkaddr * block
+    return cp_blkaddr, (first, first + blocks_per_seg * block)
 
 
 def load_consts(path):
@@ -349,6 +372,24 @@ def main():
     elif mode == 'f2fs-sb-field-differs':
         # Both magic-valid, layout fields identical, one unrelated byte differs.
         write_region(userdata, SECTOR + 1024 + 3000, bytearray(b'\x01'))
+
+    elif mode == 'f2fs-cp-first-damaged':
+        # A torn first checkpoint: its user_block_count exceeds the device,
+        # while the version field still outranks the good copy. Validity must
+        # decide, not the version, or the garbage copy would be selected.
+        off, cp = locate_checkpoints(userdata)
+        write_region(userdata, cp[0] + 0, struct.pack('<Q', 1 << 62))
+        write_region(userdata, cp[0] + 8, struct.pack('<Q', 1 << 40))
+    elif mode == 'f2fs-cp-resizefs-flag':
+        # CKPT_FLAG_RESIZEFS set in both copies: an interrupted resize.
+        off, cp = locate_checkpoints(userdata)
+        for base in cp:
+            write_region(userdata, base + 132, struct.pack('<I', 0x00004000))
+    elif mode == 'f2fs-cp-fsck-flag':
+        # CKPT_FLAG_FSCK set in both copies: filesystem needs repair.
+        off, cp = locate_checkpoints(userdata)
+        for base in cp:
+            write_region(userdata, base + 132, struct.pack('<I', 0x00000010))
 
     elif mode == 'busy-bind':
         mounts = dest / 'proc' / 'mounts'

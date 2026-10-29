@@ -11,12 +11,6 @@
 #define F2FS_IOC_RESIZE_FS _IOW(0xf5, 16, uint64_t)
 #define F2FS_SUPER_OFFSET 1024U
 #define F2FS_SUPER_SIZE 3072U
-#define F2FS_CP_FLAG_DISABLED 0x00001000U
-#define F2FS_CP_FLAG_ERROR 0x00000008U
-#define F2FS_CP_FLAG_FSCK 0x00000010U
-#define F2FS_CP_FLAG_RESIZEFS 0x00004000U
-#define F2FS_CP_FLAG_UMOUNT 0x00000001U
-#define F2FS_CP_FLAG_ORPHAN 0x00000002U
 
 static uint32_t le32(const void *p)
 {
@@ -41,6 +35,24 @@ static void utf16le_to_ascii(const uint8_t *src, size_t chars, char *out, size_t
     out[o] = '\0';
 }
 
+/*
+ * A usable checkpoint copy must look like one before its version is trusted.
+ * Offsets are from struct f2fs_checkpoint: user_block_count at 8,
+ * valid_block_count at 16, free_segment_count at 32.
+ */
+static int cp_sane(const uint8_t *cp, uint64_t blocks, uint32_t segment_count)
+{
+    uint64_t user = le64(cp + 8);
+    uint64_t valid = le64(cp + 16);
+    uint32_t free_segs = le32(cp + 32);
+    if (!user || !blocks || user > blocks || valid > user)
+        return 0;
+    /* Free segments cannot exceed the device's own segment count. */
+    if (segment_count && free_segs > segment_count)
+        return 0;
+    return 1;
+}
+
 static int read_cp(int fd, uint32_t cp_blkaddr, uint32_t segment_blocks, f2fs_info_t *info,
                    char *err, size_t errlen)
 {
@@ -50,11 +62,28 @@ static int read_cp(int fd, uint32_t cp_blkaddr, uint32_t segment_blocks, f2fs_in
         pread(fd, cp[1], sizeof(cp[1]), base + (off_t)segment_blocks * F2FS_BLOCK_BYTES) !=
             (ssize_t)sizeof(cp[1]))
         return failf(err, errlen, "cannot read F2FS checkpoint blocks");
-    uint64_t v0 = le64(cp[0]);
-    uint64_t v1 = le64(cp[1]);
-    const uint8_t *use = v1 > v0 ? cp[1] : cp[0];
+    /*
+     * The kernel picks the copy with the higher checkpoint_ver, but a torn
+     * copy can hold arbitrary bytes there, so a copy is only ranked once it
+     * looks like a checkpoint at all. Same rule as the superblock: choose by
+     * validity first, and only then by version.
+     */
+    int ok0 = cp_sane(cp[0], info->blocks, info->segment_count);
+    int ok1 = cp_sane(cp[1], info->blocks, info->segment_count);
     info->cp_copies_match = !memcmp(cp[0], cp[1], 4092);
-    info->cp1_newer = v1 > v0;
+    info->cp_damaged_copy = (ok0 && ok1) ? 0 : (ok1 ? 1 : (ok0 ? 2 : 3));
+    if (!ok0 && !ok1)
+        return failf(err, errlen, "neither F2FS checkpoint copy is usable");
+    const uint8_t *use;
+    if (ok0 && ok1) {
+        uint64_t v0 = le64(cp[0]);
+        uint64_t v1 = le64(cp[1]);
+        info->cp1_newer = v1 > v0;
+        use = info->cp1_newer ? cp[1] : cp[0];
+    } else {
+        info->cp1_newer = ok1;
+        use = ok1 ? cp[1] : cp[0];
+    }
     info->cp_present = 1;
     info->cp_version = le64(use);
     info->cp_user_blocks = le64(use + 8);
@@ -136,6 +165,16 @@ int f2fs_probe_fd(int fd, uint64_t partition_bytes, f2fs_info_t *info, char *err
         return -1;
     if (info->ckpt_flags & (F2FS_CP_FLAG_DISABLED | F2FS_CP_FLAG_ERROR))
         return failf(err, errlen, "F2FS checkpoint is disabled or marked with an error");
+    /*
+     * These two are the states where the on-disk allocation metadata is known
+     * to be inconsistent. Shrinking moves that metadata, so the filesystem has
+     * to be repaired and re-checkpointed (a clean mount) first.
+     */
+    if (info->ckpt_flags & F2FS_CP_FLAG_RESIZEFS)
+        return failf(err, errlen,
+                     "F2FS was left mid-resize; run fsck.f2fs or finish the resize first");
+    if (info->ckpt_flags & F2FS_CP_FLAG_FSCK)
+        return failf(err, errlen, "F2FS is marked for fsck; repair it before shrinking");
     return 0;
 }
 
@@ -248,12 +287,31 @@ int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *inf
                          strerror(EIO));
         }
         if (fake && !strcmp(fake, "1")) {
+            /*
+             * Emulate what F2FS_IOC_RESIZE_FS leaves behind: both superblock
+             * copies carry the new block_count, and both checkpoint copies
+             * carry a user_block_count that fits inside it. Writing only the
+             * superblock would leave the image internally inconsistent, which
+             * offline verification is supposed to reject.
+             */
             uint8_t le[8];
             for (int i = 0; i < 8; i++)
                 le[i] = (uint8_t)(expected >> (i * 8));
             if (pwrite(block_fd, le, 8, F2FS_SUPER_OFFSET + 36) != 8 ||
                 pwrite(block_fd, le, 8, F2FS_BLOCK_BYTES + F2FS_SUPER_OFFSET + 36) != 8)
                 return failf(err, errlen, "cannot simulate the F2FS resize");
+            off_t cp[2] = {
+                (off_t)info->cp_blkaddr * F2FS_BLOCK_BYTES,
+                (off_t)(info->cp_blkaddr + info->blocks_per_seg) * F2FS_BLOCK_BYTES,
+            };
+            uint8_t buf[8];
+            for (int i = 0; i < 2; i++) {
+                if (pread(block_fd, buf, 8, cp[i] + 8) != 8)
+                    return failf(err, errlen, "cannot read the F2FS checkpoint");
+                if (le64(buf) > expected &&
+                    pwrite(block_fd, le, 8, cp[i] + 8) != 8)
+                    return failf(err, errlen, "cannot simulate the F2FS checkpoint resize");
+            }
             if (fsync(block_fd) < 0)
                 return failf(err, errlen, "cannot sync the simulated F2FS resize");
             info->blocks = expected;
