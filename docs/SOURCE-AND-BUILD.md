@@ -146,9 +146,16 @@ The suite creates a temporary fixture, then checks:
   network references.
 
 Superblock handling is covered by these cases: two identical copies, one valid
-copy plus one damaged copy (warning naming the active copy), and two damaged
-copies (hard refusal). A plan records the active superblock offset
-(`fs_sb_offset`) and apply refuses if it changes.
+copy plus one damaged copy in either direction (warning naming the damaged copy),
+a copy pair that differs with both valid, and two damaged copies (hard refusal).
+A plan records the active superblock offset and damaged copy
+(`fs_sb_offset`, `fs_sb_damaged_copy`) and apply refuses if either changes.
+`tests/run_tests.sh` asserts all four states through both inspect and plan.
+
+Two JSON schemas are versioned independently: `PLAN_SCHEMA` in `src/plan.c` and
+`INSPECT_SCHEMA` in `src/state.c` are both `2`. Removing `fs_sb_sha256` and
+turning `unsupported` entries into objects changed both shapes, so a consumer of
+schema 1 must reject the new output rather than silently miss the fields.
 
 Test-only hooks are enabled with environment variables:
 

@@ -111,7 +111,7 @@ with files intact. Until then this project makes no data-preserving claim.
 
 | Area | Result |
 | --- | --- |
-| Host build, self-test and offline fixture suite | **PASS** (166/166 checks) |
+| Host build, self-test and offline fixture suite | **PASS** (185/185 checks) |
 | Host ASan/UBSan self-test, inspect, plan and fake apply | **PASS** |
 | Amethyst hardware inspect | **PASS**, read-only (see §1) |
 | Amethyst hardware plan | **NOT RUN** |
@@ -212,10 +212,10 @@ GPT image handling and independent consistency checks, not kernel behavior.
 Built artifacts for this report:
 
 ```
-2734fa37694d979203559b36e5f973a1482a451c3a63edcc5ee7e93508a1f13f  Amethyst-UniXNU-Partitioner-Apply.zip
-685eec24396e98d0f6837ddf6d500d1ee4d6dbd93773c97e9d5870da6e462975  Amethyst-UniXNU-Partitioner-Inspect.zip
-9bba09bd70e58b3caed335ed6b211d3c0396c944822c176c6965b8e673fcb9d7  Amethyst-UniXNU-Partitioner-Plan.zip
-5ab4821747debb40bd140d90818adfc95dcd859ae96acb7d027fcb5aff4b34cc  bin/partitioner (helper inside each ZIP)
+d9a35736adbeb78ea64cd26595e75635dfb98398acd56e4e166fde6ad443df67  Amethyst-UniXNU-Partitioner-Apply.zip
+8bfa60c3d74bb430d8274e1383fa16a26bd81af6d5b85339daa2bd0d0b02df02  Amethyst-UniXNU-Partitioner-Inspect.zip
+875a76d3511c57f1929a5ab3d6d99064df90eaf057d417be630ad7423a869a0f  Amethyst-UniXNU-Partitioner-Plan.zip
+23615e3bae8763e19eb52d92a3ed4e7c6a7b7f71a1b3680357cb479e7a560de4  bin/partitioner (helper inside each ZIP)
 ```
 
 Helper bytes: 198352. This build came from the Alpine aarch64 toolchain under
@@ -295,5 +295,5 @@ QEMU_AARCH64=/path/to/qemu-aarch64 ./scripts/build.sh
 QEMU_AARCH64=/path/to/qemu-aarch64 ./tests/run_tests.sh
 ```
 
-Expected final line: `TESTS: 165 passed, 0 failed`. This count covers the offline
+Expected final line: `TESTS: 185 passed, 0 failed`. This count covers the offline
 suite only and is not evidence of hardware success.

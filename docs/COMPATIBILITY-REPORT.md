@@ -71,9 +71,9 @@ only the mode the installer requests differs.
 
 | ZIP | SHA-256 | Mode |
 | --- | --- | --- |
-| `Amethyst-UniXNU-Partitioner-Inspect.zip` | `685eec24396e98d0f6837ddf6d500d1ee4d6dbd93773c97e9d5870da6e462975` | read-only inspect |
-| `Amethyst-UniXNU-Partitioner-Plan.zip` | `9bba09bd70e58b3caed335ed6b211d3c0396c944822c176c6965b8e673fcb9d7` | plan bundle only |
-| `Amethyst-UniXNU-Partitioner-Apply.zip` | `2734fa37694d979203559b36e5f973a1482a451c3a63edcc5ee7e93508a1f13f` | gated destructive apply |
+| `Amethyst-UniXNU-Partitioner-Inspect.zip` | `8bfa60c3d74bb430d8274e1383fa16a26bd81af6d5b85339daa2bd0d0b02df02` | read-only inspect |
+| `Amethyst-UniXNU-Partitioner-Plan.zip` | `875a76d3511c57f1929a5ab3d6d99064df90eaf057d417be630ad7423a869a0f` | plan bundle only |
+| `Amethyst-UniXNU-Partitioner-Apply.zip` | `d9a35736adbeb78ea64cd26595e75635dfb98398acd56e4e166fde6ad443df67` | gated destructive apply |
 
 These are the hashes of the archives in this commit. `dist/SHA256SUMS` is the
 file to check against for copies you distribute.
@@ -101,7 +101,7 @@ mismatch is resolved.
 ### Helper binary
 
 ```
-SHA-256 : 5ab4821747debb40bd140d90818adfc95dcd859ae96acb7d027fcb5aff4b34cc
+SHA-256 : 23615e3bae8763e19eb52d92a3ed4e7c6a7b7f71a1b3680357cb479e7a560de4
 file    : ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV),
           statically linked, stripped
 size    : 198352 bytes
@@ -282,9 +282,32 @@ different device is explicitly out of scope.
 Nothing here changes partition arithmetic or F2FS rounding; §5 shows those are
 identical.
 
+### The `unixnu` / `userdata` flash-target hazard
+
+The official page ends its Apply section with a warning that applies to this
+project as well:
+
+> `unixnu` remains unformatted and may contain old userdata bytes. Before
+> writing an image, check that the device port and flash command target
+> `unixnu`: the default build command may still target Android's `userdata`.
+
+That is not hypothetical here. The Amethyst port currently probes for the
+Android partition by name:
+
+```c
+/* UniXNU-amethyst/drivers/ShengUfs/RootLayout.h */
+static const char wanted[] = "userdata";
+```
+
+So before the port is changed, XNU would mount the Android data partition as its
+root. The split is a prerequisite for booting UniXNU, and pointing XNU at
+`unixnu` is a prerequisite for the split being safe. This tool will not be run
+against a device until that lookup targets `/dev/block/by-name/unixnu`; the
+`userdata` split is prepared and verified but not committed.
+
 ## 8. Offline test coverage
 
-`tests/run_tests.sh` runs 165 checks. Relevant to this report:
+`tests/run_tests.sh` runs 185 checks. Relevant to this report:
 
 | Area | Coverage |
 | --- | --- |
