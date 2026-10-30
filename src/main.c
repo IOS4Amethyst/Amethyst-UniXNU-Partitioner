@@ -18,7 +18,7 @@ static void usage(FILE *f)
         "\n"
         "Global options:\n"
         "  --root DIR        Testing only: treat DIR as the filesystem root.\n"
-        "  --base DIR        Report/plan base (default /sdcard/Amethyst-UniXNU-Partitioner).\n"
+        "  --base DIR        Report/plan base (default /usb_otg/Amethyst-UniXNU-Partitioner).\n"
         "  --identity FILE   Key=value identity file written by update-binary.\n"
         "\n"
         "inspect is read-only. plan writes files only. apply performs the destructive\n"
@@ -44,7 +44,12 @@ int main(int argc, char **argv)
 #ifdef UNIXNU_TESTING
     p.testing = 1;
 #endif
-    snprintf(p.base, sizeof(p.base), "/sdcard/Amethyst-UniXNU-Partitioner");
+    /* Default to the USB OTG stick, never to /sdcard. In recovery /sdcard is a
+     * bind mount of the decrypted userdata, so writing a request file there
+     * creates a holder that apply then has to remove before it can unmount
+     * /data - and it forbids its own bundle from living on that storage
+     * anyway. The OTG stick is a separate device and outlives the unmount. */
+    snprintf(p.base, sizeof(p.base), "/usb_otg/Amethyst-UniXNU-Partitioner");
     const char *root = NULL, *identity = NULL, *request = NULL, *plan = NULL;
     const char *confirm = NULL, *out = NULL;
     int ack = 0;

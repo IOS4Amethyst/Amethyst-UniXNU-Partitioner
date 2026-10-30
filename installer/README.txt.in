@@ -8,19 +8,21 @@ Read the project README and docs/HARDWARE-TEST-REPORT.md before using it.
 The project has NOT been validated on Amethyst hardware.
 
 Requests
+  Everything lives on the USB OTG stick, mounted at /usb_otg. The installer
+  refuses to run if /usb_otg is absent rather than falling back to /sdcard.
   samples/request-plan.conf and samples/request-apply.conf in this ZIP are
   templates. Copy the appropriate one to
-      /sdcard/Amethyst-UniXNU-Partitioner/request.conf
+      /usb_otg/Amethyst-UniXNU-Partitioner/request.conf
   and replace every placeholder. (In the project repository these templates
   live under examples/, but inside this ZIP they are packaged as samples/.)
 
 Inspect ZIP
   Reads the current state and writes inspect-*.txt and inspect-*.json under
-  /sdcard/Amethyst-UniXNU-Partitioner/. It performs no partition or filesystem
+  /usb_otg/Amethyst-UniXNU-Partitioner/. It performs no partition or filesystem
   writes, even when it reports UNSUPPORTED.
 
 Plan ZIP
-  Requires /sdcard/Amethyst-UniXNU-Partitioner/request.conf with:
+  Requires /usb_otg/Amethyst-UniXNU-Partitioner/request.conf with:
       mode = plan
       size_gib = <size>
       plan_dir = <absolute directory>
@@ -28,14 +30,15 @@ Plan ZIP
   not resize anything.
 
 Apply ZIP
-  Requires /sdcard/Amethyst-UniXNU-Partitioner/request.conf with:
+  Requires /usb_otg/Amethyst-UniXNU-Partitioner/request.conf with:
       mode = apply
       plan = <bundle directory>
       confirm = unixnu <plan_id> <serial> <unixnu_bytes>
       acknowledge_data_loss = yes
-  The bundle must be on external SD or /tmp, never on /sdcard or /data,
-  because apply unmounts /data. The helper revalidates every identity, GPT
-  byte, F2FS field and metadata hash before its first destructive operation.
+  The bundle must be on the USB OTG stick (or /tmp), never on /sdcard or
+  /data, because apply unmounts /data and /sdcard is a bind mount of it.
+  The helper revalidates every identity, GPT byte, F2FS field and metadata
+  hash before its first destructive operation.
 
   After rebooting recovery you can reuse this ZIP in read-only modes:
       mode = verify   (plan = ...)

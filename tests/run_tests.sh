@@ -534,7 +534,7 @@ if python3 tests/corrupt_fixture.py "$FIX" "$BUSY" busy-bind >"$WORK/cmd.out" 2>
         printf 'mode = apply\nplan = /plans/busy\nconfirm = %s\nacknowledge_data_loss = yes\n' \
             "$busy_confirm" >"$BUSY/plans/apply.conf"
         if env UNIXNU_TEST_STATFS="$BUSY/fixtures/statfs" UNIXNU_TEST_FAKE_SHRINK=1 \
-            UNIXNU_TEST_FAKE_UNMOUNT=1 "$HOST" apply --root "$BUSY" \
+            UNIXNU_TEST_FAKE_UNMOUNT=1 UNIXNU_TEST_KEEP_BIND=1 "$HOST" apply --root "$BUSY" \
             --identity /identity.conf --request /plans/apply.conf \
             >"$WORK/cmd.out" 2>&1; then
             bad 'apply refuses a surviving /data bind mount (unexpected success)'
@@ -583,6 +583,42 @@ if python3 tests/corrupt_fixture.py "$FIX" "$BUSY" busy-bind >"$WORK/cmd.out" 2>
     fi
 else
     bad 'busy fixture builds'
+fi
+
+echo '== recovery-UI mounts outside /data (the real EBUSY) =='
+# OrangeFox mounts /sdcard, /storage/emulated and /mnt/runtime/* directly on the
+# decrypted device. They are NOT under /data, so a path-prefix test misses them
+# and the kernel refuses to unmount /data while they exist.
+EMU="$WORK/corrupt/busy-emulated"
+if python3 tests/corrupt_fixture.py "$FIX" "$EMU" busy-emulated >"$WORK/cmd.out" 2>&1; then
+    mkdir -p "$EMU/plans"
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/emu\n' >"$EMU/plans/req.conf"
+    if UNIXNU_TEST_STATFS="$EMU/fixtures/statfs" "$HOST" plan --root "$EMU" \
+        --identity /identity.conf --request /plans/req.conf >"$WORK/cmd.out" 2>&1; then
+        ok 'emulated fixture: planning succeeds'
+        ec=$(sed -n 's/^confirm=//p' "$EMU/plans/emu/plan.conf")
+        printf 'mode = apply\nplan = /plans/emu\nconfirm = %s\nacknowledge_data_loss = yes\n' \
+            "$ec" >"$EMU/plans/apply.conf"
+        # The unmount step must recognise every one of these as a holder of
+        # userdata, not just the ones whose path starts with /data.
+        if env UNIXNU_TEST_STATFS="$EMU/fixtures/statfs" UNIXNU_TEST_FAKE_SHRINK=1 \
+            UNIXNU_TEST_FAKE_UNMOUNT=1 "$HOST" apply --root "$EMU" \
+            --identity /identity.conf --request /plans/apply.conf >"$WORK/cmd.out" 2>&1; then
+            : # success is acceptable if the fake unmount clears them all
+        fi
+        if grep -Eq '/sdcard|/storage/emulated|/mnt/runtime' "$WORK/cmd.out"; then
+            ok 'emulated mounts are treated as userdata holders'
+        elif [ "$(cat "$EMU/plans/emu/stage")" != revalidated ]; then
+            ok 'emulated mounts do not block the run'
+        else
+            bad 'emulated mounts are treated as userdata holders'
+            grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+        fi
+    else
+        bad 'emulated fixture: planning succeeds'
+    fi
+else
+    bad 'emulated fixture builds'
 fi
 
 

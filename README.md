@@ -88,8 +88,8 @@ Boot recovery, decrypt and mount `/data` read-write, then install
 `Amethyst-UniXNU-Partitioner-Inspect.zip`. Read the report under:
 
 ```
-/sdcard/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.txt
-/sdcard/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.json
+/usb_otg/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.txt
+/usb_otg/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.json
 ```
 
 Require `RESULT: SUPPORTED`. If it says `UNSUPPORTED`, read each line:
@@ -104,18 +104,25 @@ F2FS copy in either block is a refusal.
 
 ### 3. Plan
 
-Create `/sdcard/Amethyst-UniXNU-Partitioner/request.conf`:
+Create `/usb_otg/Amethyst-UniXNU-Partitioner/request.conf`:
+
+> **Use the USB OTG stick, not `/sdcard`.** In recovery `/sdcard` is a bind mount
+> of the decrypted `userdata`. Writing there makes every ZIP install create a
+> holder that apply must remove before it can unmount `/data`, and apply refuses
+> to load a bundle from userdata-backed storage anyway. The installer requires
+> `/usb_otg` and stops if it is missing rather than falling back.
 
 ```conf
 mode = plan
 size_gib = 16
 reserve_mib = 1024
-plan_dir = /external_sd/Amethyst-UniXNU-Partitioner/plans/amethyst-1
+plan_dir = /usb_otg/Amethyst-UniXNU-Partitioner/plans/amethyst-1
 ```
 
 `size_gib` must be positive and resolve to whole MiB. `plan_dir` must be an
-absolute path on external SD, USB OTG or `/tmp`, never on `/sdcard` or `/data`.
-Use the actual mount path shown in TWRP; `/external_sd` is only an example.
+absolute path on the USB OTG stick or `/tmp`, never on `/sdcard` or `/data`.
+Use the actual mount path shown in recovery; `/usb_otg` is where this project
+expects it.
 
 `reserve_mib` (default `1024`, retained for layout compatibility) leaves an
 **unallocated gap after unixnu**, outside both new partition entries. `0` omits
@@ -139,13 +146,13 @@ plan ID, a session ID, the hardware serial and the created GPT images.
 
 ### 4. Apply
 
-Copy the bundle to storage that stays writable when `/data` is unmounted (for
-example an external SD card or `/tmp`). Replace
-`/sdcard/Amethyst-UniXNU-Partitioner/request.conf` with:
+The bundle must stay readable when `/data` is unmounted: the USB OTG stick or
+`/tmp`. Replace
+`/usb_otg/Amethyst-UniXNU-Partitioner/request.conf` with:
 
 ```conf
 mode = apply
-plan = /external_sd/Amethyst-UniXNU-Partitioner/plans/amethyst-1
+plan = /usb_otg/Amethyst-UniXNU-Partitioner/plans/amethyst-1
 confirm = unixnu <plan_id> <hardware_serial> <unixnu_bytes>
 acknowledge_data_loss = yes
 ```
@@ -196,7 +203,7 @@ Reboot recovery. Set `request.conf` to a read-only mode:
 
 ```conf
 mode = verify
-plan = /external_sd/Amethyst-UniXNU-Partitioner/plans/amethyst-1
+plan = /usb_otg/Amethyst-UniXNU-Partitioner/plans/amethyst-1
 ```
 
 Install the Apply ZIP again. `verify` checks both GPT copies, partition

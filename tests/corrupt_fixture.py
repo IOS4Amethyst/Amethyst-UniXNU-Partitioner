@@ -31,6 +31,8 @@ Modes:
     f2fs-cp-resizefs-flag   set CKPT_FLAG_RESIZEFS (interrupted resize)
     f2fs-cp-fsck-flag       set CKPT_FLAG_FSCK (needs repair)
     busy-bind         add a bind mount of the decrypted device under /data
+    busy-emulated     add recovery-UI mounts of the decrypted device outside /data
+                      (/sdcard, /storage/emulated, /mnt/runtime, /data/user/0)
 """
 import os
 import shutil
@@ -416,6 +418,29 @@ def main():
         mounts = dest / 'proc' / 'mounts'
         text = mounts.read_text()
         mounts.write_text(text + '/dev/block/dm-0 /data/vendor f2fs rw,checkpoint=enable 0 0\n')
+
+    elif mode == 'busy-emulated':
+        # Recovery-UI style holders that live OUTSIDE /data: /data can only be
+        # unmounted once these are gone, and a path-prefix test misses them.
+        mounts = dest / 'proc' / 'mounts'
+        text = mounts.read_text()
+        text += (
+            '/dev/block/dm-0 /data/user/0 f2fs rw,checkpoint=enable 0 0\n'
+            '/dev/block/dm-0 /sdcard f2fs rw,checkpoint=enable 0 0\n'
+            '/dev/block/dm-0 /storage/emulated f2fs rw,checkpoint=enable 0 0\n'
+            '/dev/block/dm-0 /mnt/runtime/default/emulated f2fs rw,checkpoint=enable 0 0\n'
+        )
+        mounts.write_text(text)
+        # The paths must exist for the tool to identify what they sit on, so
+        # create them as hardlinks of the decrypted device.
+        mapped = dest / 'dev' / 'block' / 'dm-0'
+        for rel in ('sdcard', 'storage/emulated', 'mnt/runtime/default/emulated',
+                    'data/user/0'):
+            p = dest / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if p.exists() or p.is_symlink():
+                p.unlink()
+            os.link(mapped, p)
 
     else:
         print(f'unknown mode {mode}', file=sys.stderr)

@@ -587,8 +587,12 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
 #ifdef UNIXNU_TESTING
     const char *fake = getenv("UNIXNU_TEST_FAKE_UNMOUNT");
     if (fake && !strcmp(fake, "1")) {
-        /* Remove only the /data mount so a surviving bind mount under /data is
-         * still visible, exactly as after a real umount(2) of /data. */
+        /* Offline tests cannot call umount2 on a real device. Model what the
+         * real path does: drop /data, and also drop a bind mount under /data
+         * when the fixture wants that left behind (UNIXNU_TEST_KEEP_BIND=1).
+         * Without that flag the fake is a clean unmount of every /data holder. */
+        const char *keep = getenv("UNIXNU_TEST_KEEP_BIND");
+        int keep_bind = keep && !strcmp(keep, "1");
         char path[PATH_MAX];
         if (mounts_path(p, path, sizeof(path)) == 0) {
             FILE *f = fopen(path, "r");
@@ -604,6 +608,10 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
                     char *source = strtok_r(copy, " \t\n", &save);
                     char *target = strtok_r(NULL, " \t\n", &save);
                     if (source && target && !strcmp(target, "/data"))
+                        continue;
+                    /* A bind mount under /data survives only when the test asks
+                     * for it; otherwise emulate a full, clean unmount. */
+                    if (!keep_bind && target && !strncmp(target, "/data/", 6))
                         continue;
                     seen = 1;
                     size_t len = strlen(line);
@@ -642,8 +650,15 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
         if (mounts_scan(p, dev, mounts, err, errlen) < 0)
             return -1;
         for (size_t i = 0; i < mounts->n && ntargets < ARRAY_LEN(targets); i++) {
+            /* Select by what the mount sits on, not by where it appears.
+             * A recovery UI also mounts /sdcard, /storage/emulated and
+             * /mnt/runtime directories directly on the decrypted device. They
+             * are not
+             * under /data, so a path test misses them, and the kernel refuses
+             * to unmount /data while any of them still reference it. */
             const char *t = mounts->items[i].target;
-            if (strcmp(t, "/data") && strncmp(t, "/data/", 6))
+            int under_data = !strcmp(t, "/data") || !strncmp(t, "/data/", 6);
+            if (!under_data && !mounts->items[i].is_userdata)
                 continue;
             snprintf(targets[ntargets], sizeof(targets[0]), "%s", t);
             ntargets++;

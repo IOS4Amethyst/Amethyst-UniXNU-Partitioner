@@ -10,7 +10,13 @@ umask 022
 
 MODE='@ZIP_MODE@'
 EXPECTED_HELPER_SHA256='@HELPER_SHA256@'
-BASE='/sdcard/Amethyst-UniXNU-Partitioner'
+# The request file, inspect reports and plan bundles all live on the USB OTG
+# stick. Never /sdcard: in recovery that is a bind mount of the decrypted
+# userdata, so a file written there becomes a holder that apply must destroy
+# before it can unmount /data - and apply refuses to load a bundle from
+# userdata-backed storage in the first place.
+BASE='/usb_otg/Amethyst-UniXNU-Partitioner'
+OTG_MOUNT='/usb_otg'
 
 OUTFD="${2:-}"
 case "$OUTFD" in
@@ -89,7 +95,12 @@ ACTUAL_HELPER_SHA256=$(sha256sum "$RUN/partitioner" | cut -d' ' -f1)
 log 'Experimental software: this has not been validated on Amethyst hardware.'
 log 'Keep an independent userdata/metadata backup before applying.'
 
-mkdir -p "$BASE" || stop "cannot create $BASE"
+# Require the OTG stick. Falling back to /sdcard would silently reintroduce the
+# very holder that blocks the unmount.
+if [ ! -d "$OTG_MOUNT" ]; then
+    stop "USB OTG is not mounted at $OTG_MOUNT; plug in the stick, mount it in the recovery Mount menu, then retry"
+fi
+mkdir -p "$BASE" || stop "cannot create $BASE (is the OTG stick mounted read-only?)"
 IDENT="$RUN/identity.conf"
 {
     printf 'device=%s\n' "$(getprop ro.product.device 2>/dev/null || true)"
