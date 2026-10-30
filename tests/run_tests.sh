@@ -291,10 +291,11 @@ cfixture f2fs-multi-seg f2fs-multi-seg 'unsupported F2FS sections'
 cfixture f2fs-multi-dev f2fs-multi-dev 'multi-device F2FS is unsupported'
 cfixture f2fs-oversize f2fs-oversize 'exceeds the userdata partition'
 
-echo '== F2FS superblock pair: one damaged copy recovers, none refuses =='
-# Mounting needs only one valid copy and the kernel prefers the second, so a
-# torn write on either copy must be a warning, not a refusal. Only "neither
-# copy carries the magic" may be a hard stop.
+echo '== F2FS superblock pair: any disagreement is a hard stop =='
+# The reference implementation (UniXNU scripts/dual_sys/f2fs-shrink.c) requires
+# the two 3072-byte superblock copies to be byte-identical. The superblock is
+# only rewritten by a resize or a repair, so a disagreement is a real fault and
+# must not be resolved by preferring a copy.
 sbcase() {
     local name=$1 want=$2 want_text=$3
     local dir="$WORK/corrupt/$name"
@@ -323,15 +324,15 @@ sbcase() {
     if [ "$want" = SUPPORTED ]; then
         if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
             --identity /identity.conf --request /req.conf >"$WORK/cmd.out" 2>&1; then
-            ok "superblock plan records the active copy: $name"
+            ok "superblock plan accepts the pair: $name"
         else
-            bad "superblock plan records the active copy: $name"
+            bad "superblock plan accepts the pair: $name"
             grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
         fi
-        if grep -Fq 'fs_sb_offset=' "$dir/plans/sb/plan.conf" 2>/dev/null; then
-            ok "superblock plan.conf carries fs_sb_offset: $name"
+        if grep -Fq 'fs_sb_offset=0' "$dir/plans/sb/plan.conf" 2>/dev/null; then
+            ok "superblock plan.conf pins fs_sb_offset=0: $name"
         else
-            bad "superblock plan.conf carries fs_sb_offset: $name"
+            bad "superblock plan.conf pins fs_sb_offset=0: $name"
         fi
     else
         if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
@@ -343,14 +344,18 @@ sbcase() {
     fi
 }
 
-sbcase f2fs-sb-first-damaged SUPPORTED 'Damaged superblock copy     : 1'
-sbcase f2fs-sb-second-damaged SUPPORTED 'Damaged superblock copy     : 2'
+sbcase f2fs-sb-first-damaged UNSUPPORTED 'F2FS superblock copy 1 is damaged'
+sbcase f2fs-sb-second-damaged UNSUPPORTED 'F2FS superblock copy 2 is damaged'
 sbcase f2fs-sb-both-damaged UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: userdata is not F2FS'
-sbcase f2fs-sb-field-differs SUPPORTED 'Active superblock copy'
+sbcase f2fs-sb-field-differs UNSUPPORTED 'F2FS superblock copies disagree'
 
-echo '== F2FS checkpoint pair: validity beats version, bad states refuse =='
-# A torn copy can hold any version number, so the copy with the higher
-# checkpoint_ver is only trusted once it looks like a checkpoint at all.
+echo '== F2FS checkpoint is never read =='
+# The checkpoint is kernel-owned metadata that a live mount rewrites, so a
+# userspace read of it races the kernel and proves nothing the resize needs.
+# These fixtures damage it in every way that used to matter; none may change
+# the verdict, because the tool must not look at that block at all.
+# See UniXNU scripts/dual_sys/f2fs-shrink.c, which validates the superblock and
+# then asks the kernel to resize.
 cpcase() {
     local name=$1 want=$2 want_text=$3
     local dir="$WORK/corrupt/$name"
@@ -374,54 +379,37 @@ cpcase() {
     else
         ok "checkpoint report says '$want_text': $name"
     fi
+    if grep -Fq 'Checkpoint' "$dir/reports/i.txt"; then
+        bad "checkpoint report must not mention checkpoints: $name"
+        grep -m3 'Checkpoint' "$dir/reports/i.txt" | sed 's/^/    /'
+    else
+        ok "checkpoint report omits the checkpoint entirely: $name"
+    fi
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/cp\n' >"$dir/req.conf"
     if [ "$want" = SUPPORTED ]; then
-        # The damaged copy's version outranks the good one; the good version
-        # must still be the one reported, or a garbage block was selected.
-        if grep -Fq 'Checkpoint version          : 7' "$dir/reports/i.txt"; then
-            ok "checkpoint uses the valid copy's version: $name"
+        if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
+            --identity /identity.conf --request /req.conf >"$WORK/cmd.out" 2>&1; then
+            ok "checkpoint plan ignores the damaged checkpoint: $name"
         else
-            bad "checkpoint uses the valid copy's version: $name"
-            grep 'Checkpoint version' "$dir/reports/i.txt" | sed 's/^/    /'
+            bad "checkpoint plan ignores the damaged checkpoint: $name"
+            grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+        fi
+    else
+        if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" plan --root "$dir" \
+            --identity /identity.conf --request /req.conf >"$WORK/cmd.out" 2>&1; then
+            bad "checkpoint plan refuses: $name (unexpected success)"
+        else
+            ok "checkpoint plan refuses: $name"
         fi
     fi
 }
 
-cpcase f2fs-cp-first-damaged SUPPORTED 'Damaged checkpoint copy     : 1'
-cpcase f2fs-cp-resizefs-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS was left mid-resize'
-cpcase f2fs-cp-fsck-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS is marked for fsck'
-# A refusal must say which copy failed and why, so a device-side failure is
-# diagnosable without another session.
-cpcase f2fs-cp-both-unusable UNSUPPORTED 'copy 0: user_block_count is zero'
-cpcase f2fs-cp-both-out-of-range UNSUPPORTED 'user_block_count exceeds the device block count'
-# A short read is a different failure from a torn field; it says so.
-cpcase f2fs-cp-beyond-device UNSUPPORTED 'cannot read F2FS checkpoint blocks'
-
-echo '== a torn checkpoint pair is retried once, then diagnosed =='
-# A live mount rewrites one checkpoint copy before the other, so a read can
-# legitimately catch a half-written pair. The reader must re-read once after a
-# sync before refusing, and the refusal must repeat both attempts so a device
-# failure is diagnosable without another session.
-TORN="$WORK/corrupt/torn"
-if python3 tests/corrupt_fixture.py "$FIX" "$TORN" f2fs-cp-both-unusable >"$WORK/cmd.out" 2>&1; then
-    ok 'torn checkpoint fixture builds'
-    mkdir -p "$TORN/reports"
-    UNIXNU_TEST_STATFS="$TORN/fixtures/statfs" "$HOST" inspect --root "$TORN" \
-        --identity /identity.conf --out /reports/i.txt >"$WORK/cmd.out" 2>&1
-    if grep -Fq 'retried after sync' "$TORN/reports/i.txt"; then
-        ok 'torn checkpoint refused only after a retry'
-    else
-        bad 'torn checkpoint refused only after a retry'
-        grep -m2 'UNSUPPORTED' "$TORN/reports/i.txt" | sed 's/^/    /'
-    fi
-    if grep -Fq 'copy 1: user_block_count is zero' "$TORN/reports/i.txt"; then
-        ok 'torn checkpoint names the second copy too'
-    else
-        bad 'torn checkpoint names the second copy too'
-    fi
-else
-    bad 'torn checkpoint fixture builds'
-    tail -3 "$WORK/cmd.out" | sed 's/^/    /'
-fi
+cpcase f2fs-cp-first-damaged SUPPORTED 'Superblock copies match     : yes'
+cpcase f2fs-cp-resizefs-flag SUPPORTED 'Superblock copies match     : yes'
+cpcase f2fs-cp-fsck-flag SUPPORTED 'Superblock copies match     : yes'
+cpcase f2fs-cp-both-unusable SUPPORTED 'Superblock copies match     : yes'
+cpcase f2fs-cp-both-out-of-range SUPPORTED 'Superblock copies match     : yes'
+cpcase f2fs-cp-beyond-device SUPPORTED 'Superblock copies match     : yes'
 
 echo '== choosable size with unallocated tail (scaled synthetic disk) =='
 # Device-sized disk but synthetic userdata start 2048. The gap is outside both

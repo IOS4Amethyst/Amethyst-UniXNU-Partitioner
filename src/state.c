@@ -147,8 +147,8 @@ int state_collect(const paths_t *p, state_t *s, int strict, char *err, size_t er
 
     if (s->id.serial[0] == 0 || !strcmp(s->id.serial, "unknown"))
         add_unsup(s, "no hardware serial was found; device matching would be ambiguous");
-    if (s->have_fs && !s->fs.cp_copies_match)
-        add_warn(s, "F2FS checkpoint copies differ; the filesystem may be unclean");
+    if (s->have_fs && (s->fs.sb_offset || s->fs.sb_damaged_copy))
+        add_unsup(s, "F2FS superblock copies disagree or are damaged; run fsck.f2fs");
     if (s->have_fs && s->fs.encrypt_feature)
         add_warn(s, "F2FS encrypt feature is set; recovery must decrypt /data before planning");
     if (s->have_mounts && s->mounts.data_count == 1 && !s->mounts.data_rw)
@@ -238,28 +238,17 @@ static void print_fs(report_t *r, const state_t *s)
     rp_kv(r, "Volume name", "%s", fs->volume_name);
     rp_kv(r, "Features", "0x%08x%s%s", fs->feature,
           fs->encrypt_feature ? " encrypt" : "", fs->zoned ? " zoned" : "");
-    rp_kv(r, "Checkpoint copies match", "%s", fs->cp_copies_match ? "yes" : "no");
-    if (fs->cp_damaged_copy)
-        rp_kv(r, "Damaged checkpoint copy", "%d (the other copy is used)", fs->cp_damaged_copy);
-    else if (!fs->cp_copies_match)
-        rp_kv(r, "Active checkpoint copy", "%s (higher checkpoint_ver)",
-              fs->cp1_newer ? "second" : "first");
-    rp_kv(r, "Checkpoint version", "%" PRIu64, fs->cp_version);
-    rp_kv(r, "Checkpoint flags", "0x%08x%s%s%s%s%s%s", fs->ckpt_flags,
-          (fs->ckpt_flags & F2FS_CP_FLAG_DISABLED) ? " disabled" : "",
-          (fs->ckpt_flags & F2FS_CP_FLAG_ERROR) ? " error" : "",
-          (fs->ckpt_flags & F2FS_CP_FLAG_FSCK) ? " fsck" : "",
-          (fs->ckpt_flags & F2FS_CP_FLAG_RESIZEFS) ? " resize-in-progress" : "",
-          (fs->ckpt_flags & F2FS_CP_FLAG_UMOUNT) ? " umount" : "",
-          (fs->ckpt_flags & F2FS_CP_FLAG_ORPHAN) ? " orphan" : "");
-    rp_kv(r, "Checkpoint user blocks", "%" PRIu64, fs->cp_user_blocks);
-    rp_kv(r, "Checkpoint valid blocks", "%" PRIu64, fs->cp_valid_blocks);
-    rp_kv(r, "Checkpoint free segments", "%u", fs->cp_free_segments);
+    /*
+     * Only the superblock is reported. The checkpoint is kernel-owned and is
+     * rewritten while /data is mounted, so a userspace read of it is a race,
+     * not evidence; the resize ioctl is the authority on whether the kernel
+     * will shrink this filesystem.
+     */
     rp_kv(r, "Superblock copies match", "%s", fs->sb_offset ? "no" : "yes");
     if (fs->sb_damaged_copy)
-        rp_kv(r, "Damaged superblock copy", "%d (the other copy is used)", fs->sb_damaged_copy);
+        rp_kv(r, "Damaged superblock copy", "%d", fs->sb_damaged_copy);
     else if (fs->sb_offset)
-        rp_kv(r, "Active superblock copy", "2 (copies differ; the kernel prefers copy 2)");
+        rp_kv(r, "Superblock disagreement", "layout fields differ between copies");
 }
 
 static void print_gpt(report_t *r, const state_t *s)
@@ -433,11 +422,11 @@ static void write_inspect_json(const state_t *s, const char *path)
     if (s->have_fs) {
         fprintf(f, "{\"type\":\"f2fs\",\"blocks\":%" PRIu64 ",\"block_size\":%u,\"blocks_per_seg\":%u,"
                 "\"segs_per_sec\":%u,\"section_blocks\":%u,\"mounted\":%s,\"available_blocks\":%" PRIu64 ","
-                "\"encrypt_feature\":%s,\"cp_copies_match\":%s,\"sb_offset\":%u,\"cp1_newer\":%s}",
+                "\"encrypt_feature\":%s,\"sb_offset\":%u,\"sb_damaged_copy\":%d}",
                 s->fs.blocks, s->fs.block_size, s->fs.blocks_per_seg, s->fs.segs_per_sec,
                 s->fs.section_blocks, s->fs.mounted ? "true" : "false", s->fs.f_bavail,
-                s->fs.encrypt_feature ? "true" : "false", s->fs.cp_copies_match ? "true" : "false",
-                s->fs.sb_offset, s->fs.cp1_newer ? "true" : "false");
+                s->fs.encrypt_feature ? "true" : "false",
+                s->fs.sb_offset, s->fs.sb_damaged_copy);
     } else {
         fprintf(f, "null");
     }

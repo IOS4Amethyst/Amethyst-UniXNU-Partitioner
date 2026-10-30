@@ -273,18 +273,25 @@ disclaimer that they came from a synthetic fixture.
 
 ## Known limitations
 
-- Inspect has run on Amethyst hardware; Plan has run on Amethyst hardware;
-  Apply has reached the F2FS shrink on Amethyst hardware but has never
-  completed. No destructive operation has modified a real device.
+- Inspect has run on Amethyst hardware; Plan and Apply have both been run
+  against Amethyst hardware without modifying the device. The F2FS resize has
+  not yet succeeded there, so no destructive operation has completed on a real
+  device.
 - The Amethyst GPT layout is confirmed to be splittable in shape (`userdata` is
   last, entry 34 is free), but an actual split has never been performed.
 - The Amethyst recovery kernel has not been shown to implement
   `F2FS_IOC_RESIZE_FS`. The device's recovery is not TWRP and hides kallsyms, so
   the capability probe is inconclusive; Apply's own ioctl is the real test.
-- A filesystem mounted read-write rewrites its checkpoint while Apply is
-  reading it, so the first checkpoint read can catch a half-written pair. The
-  reader retries once after `syncfs` and accepts a single valid copy, matching
-  the kernel. If both reads fail, the refusal names each copy's reason.
+- F2FS validation follows UniXNU `scripts/dual_sys/f2fs-shrink.c`: the two
+  superblock copies must be byte-identical, and the checkpoint is never read.
+  The checkpoint is kernel-owned metadata that a live mount rewrites, so a
+  userspace pre-read races the kernel and can observe a torn pair; reading it
+  refused healthy filesystems twice on real hardware and proved nothing the
+  resize needs. The resize ioctl is the authority on whether the kernel will
+  shrink the filesystem; if it refuses, the GPT is left untouched.
+- Because the checkpoint is not inspected, a filesystem carrying `FSCK` or
+  `RESIZEFS` flags is not refused in advance. The ioctl fails safely instead,
+  and Apply aborts before writing either GPT copy.
 - Only single-device F2FS with 4096-byte blocks and one segment per section is
   supported; multi-device, zoned, Ext4, stacked dm and other layouts are
   rejected.

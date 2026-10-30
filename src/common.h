@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define TOOL_NAME "amethyst-unixnu-partitioner"
-#define TOOL_VERSION "0.2.1"
+#define TOOL_VERSION "0.3.0"
 #define MIB UINT64_C(1048576)
 #define GIB UINT64_C(1073741824)
 #define GPT_ENTRY_SIZE 128U
@@ -33,14 +33,7 @@
  * Kept at 1024 for existing request/layout compatibility. */
 #define F2FS_RESERVE_MIB_DEFAULT 1024U
 
-/* F2FS checkpoint flags (struct f2fs_checkpoint, ckpt_flags at byte 132). */
-#define F2FS_CP_FLAG_UMOUNT   0x00000001U
-#define F2FS_CP_FLAG_ORPHAN   0x00000002U
-#define F2FS_CP_FLAG_FASTBOOT 0x00000080U
-#define F2FS_CP_FLAG_ERROR    0x00000008U
-#define F2FS_CP_FLAG_FSCK     0x00000010U
-#define F2FS_CP_FLAG_DISABLED 0x00001000U
-#define F2FS_CP_FLAG_RESIZEFS 0x00004000U
+/* F2FS segment geometry, shared with the kernel's section rounding. */
 #define F2FS_SEGMENT_BLOCKS 512U
 #define LINUX_FS_DATA_GUID "0fc63daf-8483-4772-8e79-3d69d8477de4"
 #define F2FS_IOC_GET_FEATURES _IOR(0xf5, 5, uint32_t)
@@ -148,21 +141,9 @@ typedef struct {
     int encrypt_feature;
     int zoned;
     int multi_device;
-    uint32_t ckpt_flags;
-    uint64_t cp_version;
-    uint64_t cp_user_blocks;
-    uint64_t cp_valid_blocks;
-    uint32_t cp_blkaddr;
-    uint32_t cp_free_segments;
-    uint32_t cp_total_segments;
-    int cp_copies_match;
-    int cp1_newer;
-    /* 0 = both copies usable, 1/2 = that copy damaged, 3 = neither usable. */
-    int cp_damaged_copy;
-    int cp_present;
     char uuid[37];
     char volume_name[64];
-    /* Start of the first superblock copy that disagrees, or 0 when they match. */
+    /* Start of the second superblock copy when the pair disagrees, or 0 when they match. */
     uint32_t sb_offset;
     int sb_damaged_copy;
     int mounted;
