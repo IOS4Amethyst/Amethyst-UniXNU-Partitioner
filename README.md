@@ -273,13 +273,18 @@ disclaimer that they came from a synthetic fixture.
 
 ## Known limitations
 
-- Inspect has run on Amethyst hardware; Plan and Apply have not. No destructive
-  operation has touched a real device.
+- Inspect has run on Amethyst hardware; Plan has run on Amethyst hardware;
+  Apply has reached the F2FS shrink on Amethyst hardware but has never
+  completed. No destructive operation has modified a real device.
 - The Amethyst GPT layout is confirmed to be splittable in shape (`userdata` is
   last, entry 34 is free), but an actual split has never been performed.
 - The Amethyst recovery kernel has not been shown to implement
   `F2FS_IOC_RESIZE_FS`. The device's recovery is not TWRP and hides kallsyms, so
   the capability probe is inconclusive; Apply's own ioctl is the real test.
+- A filesystem mounted read-write rewrites its checkpoint while Apply is
+  reading it, so the first checkpoint read can catch a half-written pair. The
+  reader retries once after `syncfs` and accepts a single valid copy, matching
+  the kernel. If both reads fail, the refusal names each copy's reason.
 - Only single-device F2FS with 4096-byte blocks and one segment per section is
   supported; multi-device, zoned, Ext4, stacked dm and other layouts are
   rejected.

@@ -389,6 +389,39 @@ cpcase() {
 cpcase f2fs-cp-first-damaged SUPPORTED 'Damaged checkpoint copy     : 1'
 cpcase f2fs-cp-resizefs-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS was left mid-resize'
 cpcase f2fs-cp-fsck-flag UNSUPPORTED 'UNSUPPORTED [hard]: filesystem: F2FS is marked for fsck'
+# A refusal must say which copy failed and why, so a device-side failure is
+# diagnosable without another session.
+cpcase f2fs-cp-both-unusable UNSUPPORTED 'copy 0: user_block_count is zero'
+cpcase f2fs-cp-both-out-of-range UNSUPPORTED 'user_block_count exceeds the device block count'
+# A short read is a different failure from a torn field; it says so.
+cpcase f2fs-cp-beyond-device UNSUPPORTED 'cannot read F2FS checkpoint blocks'
+
+echo '== a torn checkpoint pair is retried once, then diagnosed =='
+# A live mount rewrites one checkpoint copy before the other, so a read can
+# legitimately catch a half-written pair. The reader must re-read once after a
+# sync before refusing, and the refusal must repeat both attempts so a device
+# failure is diagnosable without another session.
+TORN="$WORK/corrupt/torn"
+if python3 tests/corrupt_fixture.py "$FIX" "$TORN" f2fs-cp-both-unusable >"$WORK/cmd.out" 2>&1; then
+    ok 'torn checkpoint fixture builds'
+    mkdir -p "$TORN/reports"
+    UNIXNU_TEST_STATFS="$TORN/fixtures/statfs" "$HOST" inspect --root "$TORN" \
+        --identity /identity.conf --out /reports/i.txt >"$WORK/cmd.out" 2>&1
+    if grep -Fq 'retried after sync' "$TORN/reports/i.txt"; then
+        ok 'torn checkpoint refused only after a retry'
+    else
+        bad 'torn checkpoint refused only after a retry'
+        grep -m2 'UNSUPPORTED' "$TORN/reports/i.txt" | sed 's/^/    /'
+    fi
+    if grep -Fq 'copy 1: user_block_count is zero' "$TORN/reports/i.txt"; then
+        ok 'torn checkpoint names the second copy too'
+    else
+        bad 'torn checkpoint names the second copy too'
+    fi
+else
+    bad 'torn checkpoint fixture builds'
+    tail -3 "$WORK/cmd.out" | sed 's/^/    /'
+fi
 
 echo '== choosable size with unallocated tail (scaled synthetic disk) =='
 # Device-sized disk but synthetic userdata start 2048. The gap is outside both

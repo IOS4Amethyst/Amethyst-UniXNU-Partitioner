@@ -380,6 +380,27 @@ def main():
         off, cp = locate_checkpoints(userdata)
         write_region(userdata, cp[0] + 0, struct.pack('<Q', 1 << 62))
         write_region(userdata, cp[0] + 8, struct.pack('<Q', 1 << 40))
+    elif mode == 'f2fs-cp-both-unusable':
+        # Neither copy is a checkpoint: the refusal must name both reasons
+        # rather than a single catch-all message.
+        off, cp = locate_checkpoints(userdata)
+        for base in cp:
+            write_region(userdata, base + 8, struct.pack('<Q', 0))
+    elif mode == 'f2fs-cp-both-out-of-range':
+        # Both copies claim more user blocks than the device has.
+        off, cp = locate_checkpoints(userdata)
+        for base in cp:
+            write_region(userdata, base + 8, struct.pack('<Q', 1 << 40))
+    elif mode == 'f2fs-cp-beyond-device':
+        # cp_blkaddr points past the end of the partition, so the checkpoint
+        # pread comes up short. The error must name the block and the byte
+        # count instead of claiming the copies are "not usable". Both
+        # superblocks are edited because the reader prefers the second copy.
+        sb = read_region(userdata, 1024, 3072)
+        cp_blkaddr = struct.unpack_from('<I', sb, 76)[0]
+        bad = struct.pack('<I', cp_blkaddr + 0x10000000)
+        write_region(userdata, 1024 + 76, bad)
+        write_region(userdata, SECTOR + 1024 + 76, bad)
     elif mode == 'f2fs-cp-resizefs-flag':
         # CKPT_FLAG_RESIZEFS set in both copies: an interrupted resize.
         off, cp = locate_checkpoints(userdata)
