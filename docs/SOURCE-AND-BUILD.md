@@ -57,7 +57,8 @@ Material differences from the host-side parent scripts:
 - Plan and apply are separate ZIPs. Apply consumes a previously reviewed bundle
   instead of regenerating a plan and applying it in one step.
 - The bundle must be off `userdata` because apply unmounts `/data`.
-- Apply persists a session ID and stage log and never retries automatically.
+- Apply persists a session ID and stage log and never retries automatically; a second
+  run resumes from the recorded stage only after re-verifying the device.
 - `metadata` is content-hashed before planning, before the shrink, after the
   shrink and again after unmount.
 - `unixnu` type/unique GUIDs, LBA range, attributes and label are revalidated

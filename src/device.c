@@ -529,7 +529,17 @@ int mounts_scan(const paths_t *p, device_t *dev, mounts_t *mounts, char *err, si
     }
     /* Do not clear dev->mapped here when /data is absent. After an apply
      * unmount, mounts_check_unmounted needs the last known decrypted device to
-     * detect a bind mount of /data that outlived the /data mount itself. */
+     * detect a bind mount of /data that outlived the /data mount itself.
+     *
+     * But a resumed apply starts with /data already unmounted, so there is no
+     * mapping left to learn from the mount table. Fall back to the raw partition
+     * then: the shrink rewrites the superblock through whichever node serves the
+     * filesystem, and while unmounted the raw node serves it directly. */
+    if (!dev->mapped[0] && dev->raw[0]) {
+        snprintf(dev->mapped, sizeof(dev->mapped), "%s", dev->raw);
+        snprintf(dev->mapped_node, sizeof(dev->mapped_node), "%s", dev->raw_node);
+        dev->mapped_rdev = dev->raw_rdev;
+    }
     return 0;
 }
 
@@ -584,6 +594,7 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
             FILE *f = fopen(path, "r");
             char kept[8192] = "";
             size_t used = 0;
+            int seen = 1; /* an empty mount table is legal, a missing one is not */
             if (f) {
                 char line[1024];
                 while (fgets(line, sizeof(line), f)) {
@@ -594,6 +605,7 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
                     char *target = strtok_r(NULL, " \t\n", &save);
                     if (source && target && !strcmp(target, "/data"))
                         continue;
+                    seen = 1;
                     size_t len = strlen(line);
                     if (used + len + 1 < sizeof(kept)) {
                         memcpy(kept + used, line, len);
@@ -603,6 +615,8 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
                 }
                 fclose(f);
             }
+            if (!seen)
+                return failf(err, errlen, "fixture %s is empty or missing", path);
             (void)write_text(path, kept, 0644);
         }
     } else

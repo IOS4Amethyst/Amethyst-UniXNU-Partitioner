@@ -93,6 +93,29 @@ static int region_matches(const uint8_t *current, size_t current_len,
     return 0;
 }
 
+/* Read the two on-disk GPT regions verbatim, so a resumed apply can classify
+ * whatever state an interrupted run left behind instead of trusting its log. */
+static int read_gpt_regions(int fd, const state_t *st, uint8_t **primary, size_t *primary_len,
+                            uint8_t **backup, size_t *backup_len, char *err, size_t errlen)
+{
+    gpt_t g;
+    memset(&g, 0, sizeof(g));
+    if (gpt_read_fd(fd, st->dev.sector, st->dev.total_sectors, &g, err, errlen) < 0)
+        return -1;
+    if (!g.primary || !g.backup || !g.primary_len || !g.backup_len) {
+        gpt_free(&g);
+        return failf(err, errlen, "cannot read the on-disk GPT regions");
+    }
+    *primary = xmalloc(g.primary_len);
+    *backup = xmalloc(g.backup_len);
+    memcpy(*primary, g.primary, g.primary_len);
+    memcpy(*backup, g.backup, g.backup_len);
+    *primary_len = g.primary_len;
+    *backup_len = g.backup_len;
+    gpt_free(&g);
+    return 0;
+}
+
 static int gpt_verify_after(const gpt_t *after, const gpt_t *before, const plan_info_t *plan,
                             char *err, size_t errlen)
 {
@@ -103,6 +126,7 @@ static int gpt_verify_after(const gpt_t *after, const gpt_t *before, const plan_
     if (after->first_usable != before->first_usable || after->last_usable != before->last_usable)
         return failf(err, errlen, "GPT usable range changed");
     char guid[37];
+    /* plan->userdata_index and plan->unixnu_index are 1-based entry numbers. */
     for (uint32_t i = 1; i <= after->count; i++) {
         const uint8_t *n = after->table + (size_t)(i - 1) * GPT_ENTRY_SIZE;
         const uint8_t *o = before->table + (size_t)(i - 1) * GPT_ENTRY_SIZE;
@@ -237,8 +261,10 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
         return -1;
     if (plan_bundle_verify(plan_dir, err, errlen) < 0)
         return -1;
+    /* Accept "planned" for a fresh run, or any interrupted stage for a resume.
+     * The stage is validated below, once we know which shape it has. */
     char stage[64];
-    if (plan_check_stage(plan_dir, "planned", stage, sizeof(stage), err, errlen) < 0)
+    if (plan_check_stage(plan_dir, NULL, stage, sizeof(stage), err, errlen) < 0)
         return -1;
 
     state_t s;
@@ -246,13 +272,22 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
         state_free(&s);
         return -1;
     }
-    if (plan_match_state(&plan, &s, err, errlen) < 0) {
+    if (plan_match_state_ex(&plan, &s, strcmp(stage, "planned") != 0, err, errlen) < 0) {
         state_free(&s);
         return -1;
     }
-    if (mounts_check_for_plan(p, &s.dev, &s.mounts, err, errlen) < 0) {
-        state_free(&s);
-        return -1;
+    if (strcmp(stage, "planned") == 0) {
+        if (mounts_check_for_plan(p, &s.dev, &s.mounts, err, errlen) < 0) {
+            state_free(&s);
+            return -1;
+        }
+    } else {
+        /* A resume runs with /data already unmounted; the fresh-plan check that
+         * demands a read-write /data cannot apply. */
+        if (mounts_scan(p, &s.dev, &s.mounts, err, errlen) < 0) {
+            state_free(&s);
+            return -1;
+        }
     }
 
     uint8_t *primary_before = NULL, *backup_before = NULL;
@@ -280,260 +315,363 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
         goto fail;
     }
 
-    /* Only after every read-only check succeeded do we create the session and
-     * touch the filesystem or partition table. */
-    if (create_session(plan_dir, &plan, err, errlen) < 0)
-        goto fail;
-    plan_write_stage(plan_dir, "revalidated", err, errlen);
+    /* Every stage beyond "revalidated" is reachable again: an interrupted run
+     * used to abandon the bundle, which turned a transient failure into a lost
+     * session. Resuming checks that the world still matches what the stage file
+     * claims before continuing, so it is not a blind replay. */
+    static const char *const resumable[] = {
+        "unmounted", "f2fs-shrink-started", "f2fs-shrink-complete", "f2fs-verified",
+        "gpt-backup-writing", "gpt-backup-verified", "gpt-primary-writing",
+        "gpt-primary-verified",
+    };
+    int resumed = strcmp(stage, "planned") != 0;
+    if (resumed) {
+        int known = 0;
+        for (size_t i = 0; i < ARRAY_LEN(resumable); i++)
+            if (!strcmp(stage, resumable[i]))
+                known = 1;
+        if (!known)
+            return failf(err, errlen,
+                         "plan stage is '%s', expected 'planned' or an interrupted stage; "
+                         "create a fresh plan", stage);
+        if (mounts_check_unmounted(p, &s.dev, &s.mounts, err, errlen) < 0) {
+            state_free(&s);
+            return -1;
+        }
+        printf("Resuming an interrupted apply from stage '%s'.\n", stage);
+        fflush(stdout);
+    }
+    /* Stage ordering, strictly forward. `reached` advances as each step is
+     * confirmed, and a step whose work is already proven on disk is skipped. */
+    int reached = resumed ? 1 : 0;
 
-    char data_path[PATH_MAX];
-    if (root_join(p, data_path, sizeof(data_path), "/data") < 0) {
-        fail_apply(plan_dir, "revalidated", err, errlen, "path too long");
-        goto fail;
-    }
-    int fs_fd = open(data_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    int block_fd = -1;
-#ifdef UNIXNU_TESTING
-    /* The offline fake-shrink hook edits the superblock through this fd. */
-    if (getenv("UNIXNU_TEST_FAKE_SHRINK"))
-        block_fd = open(s.dev.mapped, O_RDWR | O_CLOEXEC);
-#endif
-    if (block_fd < 0)
-        block_fd = open(s.dev.mapped, O_RDONLY | O_CLOEXEC);
-    if (fs_fd < 0 || block_fd < 0) {
-        fail_apply(plan_dir, "revalidated", err, errlen, "cannot open /data or its mapped device: %s",
-                   strerror(errno));
-        if (fs_fd >= 0) close(fs_fd);
-        if (block_fd >= 0) close(block_fd);
-        goto fail;
-    }
-    f2fs_info_t fs;
-    char ferr[512] = "";
-    if (f2fs_probe_mounted(data_path, s.dev.mapped, s.dev.userdata_bytes, &fs,
-                           ferr, sizeof(ferr)) < 0) {
-        fail_apply(plan_dir, "revalidated", err, errlen, "F2FS recheck failed: %s", ferr);
-        close(fs_fd);
-        close(block_fd);
-        goto fail;
-    }
-    if (fs.blocks != plan.fs_blocks) {
-        fail_apply(plan_dir, "revalidated", err, errlen,
-                   "F2FS block count is %" PRIu64 ", plan expects %" PRIu64,
-                   fs.blocks, plan.fs_blocks);
-        close(fs_fd);
-        close(block_fd);
-        goto fail;
-    }
-    uint64_t request = 0;
-    if (fs.blocks > plan.limit_blocks) {
-        request = f2fs_request_blocks(fs.blocks, plan.limit_blocks);
-        if (!request || f2fs_expected_blocks(fs.blocks, request) != plan.expected_blocks) {
+    if (!resumed) {
+        /* Only after every read-only check succeeded do we create the session
+         * and touch anything. */
+        if (create_session(plan_dir, &plan, err, errlen) < 0) {
+            state_free(&s);
+            return -1;
+        }
+        plan_write_stage(plan_dir, "revalidated", err, errlen);
+
+        /*
+         * Unmount first, shrink second.
+         *
+         * The ioctl rewrites the F2FS superblock, but the checkpoint keeps the
+         * old user_block_count until the kernel commits one, which it does on a
+         * clean unmount. Shrinking while /data is still mounted leaves the
+         * superblock and the checkpoint disagreeing if that unmount then fails
+         * with EBUSY, which is exactly what happened on hardware. Doing the
+         * unmount first means a busy /data costs nothing: it fails before the
+         * filesystem is touched.
+         *
+         * The filesystem is reached through the dm mapper, which stays open
+         * after /data is unmounted, so this is the same fd path as before.
+         */
+        if (mounts_unmount_data(p, &s.dev, &s.mounts, err, errlen) < 0) {
             fail_apply(plan_dir, "revalidated", err, errlen,
-                       "F2FS section rounding no longer matches the plan");
-            close(fs_fd);
-            close(block_fd);
+                       "%s; nothing was changed, clear the holders and retry", err);
             goto fail;
         }
-        if (fs.blocks - request >= fs.f_bavail) {
-            fail_apply(plan_dir, "revalidated", err, errlen,
-                       "insufficient free F2FS space");
-            close(fs_fd);
-            close(block_fd);
-            goto fail;
-        }
-    } else if (plan.expected_blocks != fs.blocks) {
-        fail_apply(plan_dir, "revalidated", err, errlen,
-                   "plan expects no resize but sizes differ");
-        close(fs_fd);
-        close(block_fd);
-        goto fail;
+        plan_write_stage(plan_dir, "unmounted", err, errlen);
+        reached = 2;
     }
 
-    plan_write_stage(plan_dir, "f2fs-shrink-started", err, errlen);
-    printf("Shrinking F2FS from %" PRIu64 " to %" PRIu64 " blocks (limit %" PRIu64 ").\n"
-           "Keep power connected and do not use the recovery UI.\n",
-           fs.blocks, plan.expected_blocks, plan.limit_blocks);
-    fflush(stdout);
-    uint64_t request_out = fs.blocks, expected_out = fs.blocks;
-    if (fs.blocks > plan.limit_blocks) {
-        if (f2fs_shrink(fs_fd, block_fd, plan.limit_blocks, &fs,
-                        &request_out, &expected_out, ferr, sizeof(ferr)) < 0) {
-            fail_apply(plan_dir, "f2fs-shrink-started", err, errlen,
-                       "F2FS resize failed: %s; GPT is unchanged. Do not retry; run recover.", ferr);
-            close(fs_fd);
-            close(block_fd);
-            goto fail;
-        }
-    }
-    if (expected_out != plan.expected_blocks) {
-        fail_apply(plan_dir, "f2fs-shrink-started", err, errlen,
-                   "unexpected F2FS result %" PRIu64 "; GPT is unchanged", expected_out);
-        close(fs_fd);
-        close(block_fd);
-        goto fail;
-    }
-    close(fs_fd);
-    plan_write_stage(plan_dir, "f2fs-shrink-complete", err, errlen);
-
-    f2fs_info_t offline;
-    if (f2fs_probe_fd(block_fd, plan.userdata_new_bytes, &offline, ferr, sizeof(ferr)) < 0) {
-        fail_apply(plan_dir, "f2fs-shrink-complete", err, errlen,
-                   "offline F2FS verification failed: %s", ferr);
-        close(block_fd);
-        goto fail;
-    }
-    if (offline.blocks != plan.expected_blocks || offline.blocks > plan.limit_blocks) {
-        fail_apply(plan_dir, "f2fs-shrink-complete", err, errlen,
-                   "F2FS is %" PRIu64 " blocks, expected %" PRIu64,
-                   offline.blocks, plan.expected_blocks);
-        close(block_fd);
-        goto fail;
-    }
-    close(block_fd);
-    plan_write_stage(plan_dir, "f2fs-verified", err, errlen);
-
-    if (mounts_unmount_data(p, &s.dev, &s.mounts, err, errlen) < 0) {
-        apply_log(plan_dir, "FAILED stage=f2fs-verified: %s", err);
-        goto fail;
-    }
-    plan_write_stage(plan_dir, "unmounted", err, errlen);
-
-    /* /data is gone now. Re-hash metadata once more immediately before the first
-     * GPT write: the preflight hash proved the plan matches, and this proves
-     * nothing changed metadata while /data was being unmounted. */
+    /*
+     * /data is unmounted at every point from here on, so metadata can no longer
+     * be rewritten by Android. One hash check covers every remaining stage.
+     */
     char merr[512] = "";
     if (probe_constant_metadata(&plan, &s, merr, sizeof(merr)) < 0) {
-        fail_apply(plan_dir, "unmounted", err, errlen,
-                   "metadata recheck after unmount failed: %s; GPT is unchanged", merr);
+        fail_apply(plan_dir, resumed ? stage : "unmounted", err, errlen,
+                   "metadata recheck failed: %s; GPT is unchanged", merr);
         goto fail;
     }
-    apply_log(plan_dir, "metadata rechecked after unmount");
+    apply_log(plan_dir, "metadata rechecked (offline)");
+
+    int block_fd = open(s.dev.mapped, O_RDWR | O_CLOEXEC);
+    if (block_fd < 0) {
+        fail_apply(plan_dir, resumed ? stage : "unmounted", err, errlen,
+                   "cannot open the mapped device %s read-write: %s; nothing was changed",
+                   s.dev.mapped, strerror(errno));
+        goto fail;
+    }
+
+    /* Step: the filesystem must be at the planned size. Either it never shrank
+     * (still fs_blocks) or it already shrank (already expected_blocks). Anything
+     * else is a state this plan cannot describe. */
+    f2fs_info_t fs;
+    char ferr[512] = "";
+    if (f2fs_probe_fd(block_fd, plan.userdata_bytes, &fs, ferr, sizeof(ferr)) < 0) {
+        fail_apply(plan_dir, resumed ? stage : "unmounted", err, errlen,
+                   "F2FS check failed: %s", ferr);
+        close(block_fd);
+        goto fail;
+    }
+    if (fs.blocks != plan.fs_blocks && fs.blocks != plan.expected_blocks) {
+        fail_apply(plan_dir, resumed ? stage : "unmounted", err, errlen,
+                   "F2FS block count is %" PRIu64 ", plan expects %" PRIu64 " or %" PRIu64
+                   "; nothing was changed", fs.blocks, plan.fs_blocks, plan.expected_blocks);
+        close(block_fd);
+        goto fail;
+    }
+    uint64_t request_out = fs.blocks, expected_out = fs.blocks;
+    if (fs.blocks == plan.expected_blocks) {
+        if (reached < 4)
+            printf("F2FS is already at %" PRIu64 " blocks; skipping the resize.\n",
+                   plan.expected_blocks);
+        reached = 4;
+    } else {
+        uint64_t want = f2fs_request_blocks(fs.blocks, plan.limit_blocks);
+        if (!want || f2fs_expected_blocks(fs.blocks, want) != plan.expected_blocks) {
+            fail_apply(plan_dir, resumed ? stage : "unmounted", err, errlen,
+                       "F2FS section rounding no longer matches the plan; nothing was changed");
+            close(block_fd);
+            goto fail;
+        }
+        plan_write_stage(plan_dir, "f2fs-shrink-started", err, errlen);
+        printf("Shrinking F2FS from %" PRIu64 " to %" PRIu64 " blocks (limit %" PRIu64 ").\n"
+               "Keep power connected and do not use the recovery UI.\n",
+               fs.blocks, plan.expected_blocks, plan.limit_blocks);
+        fflush(stdout);
+        if (f2fs_shrink(block_fd, block_fd, plan.limit_blocks, &fs,
+                        &request_out, &expected_out, ferr, sizeof(ferr)) < 0) {
+            fail_apply(plan_dir, "f2fs-shrink-started", err, errlen,
+                       "F2FS resize failed: %s; GPT is unchanged. Run recover.", ferr);
+            close(block_fd);
+            goto fail;
+        }
+        printf("F2FS resized to %" PRIu64 " blocks.\n", expected_out);
+        fflush(stdout);
+        if (expected_out != plan.expected_blocks) {
+            fail_apply(plan_dir, "f2fs-shrink-started", err, errlen,
+                       "unexpected F2FS result %" PRIu64 "; GPT is unchanged", expected_out);
+            close(block_fd);
+            goto fail;
+        }
+        plan_write_stage(plan_dir, "f2fs-shrink-complete", err, errlen);
+        reached = 3;
+    }
+
+    if (reached < 4) {
+        f2fs_info_t offline;
+        if (f2fs_probe_fd(block_fd, plan.userdata_new_bytes, &offline, ferr, sizeof(ferr)) < 0) {
+            fail_apply(plan_dir, "f2fs-shrink-complete", err, errlen,
+                       "offline F2FS verification failed: %s", ferr);
+            close(block_fd);
+            goto fail;
+        }
+        if (offline.blocks != plan.expected_blocks || offline.blocks > plan.limit_blocks) {
+            fail_apply(plan_dir, "f2fs-shrink-complete", err, errlen,
+                       "F2FS is %" PRIu64 " blocks, expected %" PRIu64,
+                       offline.blocks, plan.expected_blocks);
+            close(block_fd);
+            goto fail;
+        }
+        plan_write_stage(plan_dir, "f2fs-verified", err, errlen);
+        reached = 4;
+    }
+    close(block_fd);
 
     int disk_fd = open(s.dev.disk, O_RDWR | O_CLOEXEC);
     if (disk_fd < 0) {
-        fail_apply(plan_dir, "unmounted", err, errlen, "cannot open %s read-write: %s",
+        fail_apply(plan_dir, "f2fs-verified", err, errlen, "cannot open %s read-write: %s; "
+                   "the filesystem is already shrunk, rerun apply to resume",
                    s.dev.disk, strerror(errno));
         goto fail;
     }
-    gpt_t current;
-    memset(&current, 0, sizeof(current));
-    if (gpt_read_fd(disk_fd, s.dev.sector, s.dev.total_sectors, &current, err, errlen) < 0) {
-        apply_log(plan_dir, "FAILED stage=unmounted: %s", err);
-        close(disk_fd);
-        goto fail;
-    }
-    if (region_matches(current.primary, current.primary_len, primary_before, pbl,
-                       "primary GPT before write", err, errlen) < 0 ||
-        region_matches(current.backup, current.backup_len, backup_before, bbl,
-                       "backup GPT before write", err, errlen) < 0) {
-        apply_log(plan_dir, "FAILED stage=unmounted: %s", err);
-        gpt_free(&current);
-        close(disk_fd);
-        goto fail;
-    }
-    gpt_free(&current);
 
-    off_t backup_off = (off_t)(s.dev.total_sectors - 1 - s.gpt.blocks) * (off_t)s.dev.sector;
-    if ((uint64_t)backup_off / s.dev.sector != s.gpt.total_sectors - 1 - s.gpt.blocks) {
-        fail_apply(plan_dir, "unmounted", err, errlen, "backup GPT offset is out of range");
+    /*
+     * The GPT may be in three states: untouched, backup-only (interrupted before
+     * the primary write), or fully written. Read what is actually there and
+     * classify it, instead of assuming the stage file is the truth.
+     */
+    uint8_t *cur_primary = NULL, *cur_backup = NULL;
+    size_t cur_plen = 0, cur_blen = 0;
+    if (read_gpt_regions(disk_fd, &s, &cur_primary, &cur_plen, &cur_backup, &cur_blen,
+                         err, errlen) < 0) {
         close(disk_fd);
         goto fail;
     }
+    if (cur_plen != plan.gpt_primary_len || cur_blen != plan.gpt_backup_len) {
+        free(cur_primary);
+        free(cur_backup);
+        fail_apply(plan_dir, "f2fs-verified", err, errlen,
+                   "on-disk GPT region sizes differ from the plan; do not reboot");
+        close(disk_fd);
+        goto fail;
+    }
+    int prim_is_before = !memcmp(cur_primary, primary_before, pbl);
+    int prim_is_after = !memcmp(cur_primary, primary_after, pal);
+    int bak_is_before = !memcmp(cur_backup, backup_before, bbl);
+    int bak_is_after = !memcmp(cur_backup, backup_after, bal);
+    free(cur_primary);
+    free(cur_backup);
+    if (!(prim_is_before || prim_is_after) || !(bak_is_before || bak_is_after)) {
+        fail_apply(plan_dir, "f2fs-verified", err, errlen,
+                   "on-disk GPT matches neither the before nor the after image; "
+                   "do not reboot, the filesystem is already shrunk");
+        close(disk_fd);
+        goto fail;
+    }
+    if (prim_is_after && bak_is_after) {
+        printf("Both GPT copies are already written; nothing left to do.\n");
+        close(disk_fd);
+    } else if (prim_is_after && !bak_is_after) {
+        close(disk_fd);
+        fail_apply(plan_dir, "gpt-primary-verified", err, errlen,
+                   "primary GPT is new but the backup GPT is old; this ordering is not produced "
+                   "by this tool - do not reboot");
+        goto fail;
+    } else if (bak_is_after && prim_is_before && resumed) {
+        apply_log(plan_dir, "resuming: backup GPT already written, primary pending");
+        close(disk_fd);
+        disk_fd = -1;
+        goto gpt_primary_write;
+    } else {
+        if (!bak_is_before) {
+            fail_apply(plan_dir, "f2fs-verified", err, errlen,
+                       "backup GPT is not the planned original; do not reboot");
+            close(disk_fd);
+            goto fail;
+        }
+        goto gpt_backup_write;
+    }
 
-    plan_write_stage(plan_dir, "gpt-backup-writing", err, errlen);
     sync();
-#ifdef UNIXNU_TESTING
-    if (test_inject("UNIXNU_TEST_FAIL_BACKUP_WRITE")) {
-        errno = EIO;
-        fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
-                   "backup GPT write failed: %s; do not reboot", strerror(errno));
-        close(disk_fd);
+    if (plan_write_stage(plan_dir, "complete", err, errlen) < 0)
         goto fail;
-    }
-#endif
-    if (pwrite_all(disk_fd, backup_after, bal, backup_off) < 0) {
-        fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
-                   "backup GPT write failed: %s; do not reboot", strerror(errno));
-        close(disk_fd);
-        goto fail;
-    }
-    uint8_t *verify = xmalloc(bal);
-    if (pread_all(disk_fd, verify, bal, backup_off) < 0 ||
-        memcmp(verify, backup_after, bal)
+
+    printf("\nAPPLY COMPLETE: both GPT copies were written and verified.\n"
+           "Partition identities, userdata start/GUID/attributes and metadata were preserved.\n"
+           "userdata is now unmounted. Reboot recovery before using /data.\n"
+           "Then run verify against this plan directory.\n"
+           "\n"
+           "A GPT backup does not contain file contents. Restoring the old GPT cannot\n"
+           "undo the F2FS shrink. Do not format userdata or unixnu.\n");
+    free(primary_before);
+    free(backup_before);
+    free(primary_after);
+    free(backup_after);
+    state_free(&s);
+    return 0;
+
+gpt_backup_write:
+    {
+        off_t backup_off = (off_t)(s.dev.total_sectors - 1 - s.gpt.blocks) * (off_t)s.dev.sector;
+        if ((uint64_t)backup_off / s.dev.sector != s.gpt.total_sectors - 1 - s.gpt.blocks) {
+            fail_apply(plan_dir, "f2fs-verified", err, errlen, "backup GPT offset is out of range");
+            close(disk_fd);
+            goto fail;
+        }
+        plan_write_stage(plan_dir, "gpt-backup-writing", err, errlen);
+        sync();
 #ifdef UNIXNU_TESTING
-        || test_inject("UNIXNU_TEST_FAIL_BACKUP_READBACK")
+        if (test_inject("UNIXNU_TEST_FAIL_BACKUP_WRITE")) {
+            errno = EIO;
+            fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
+                       "backup GPT write failed: %s; do not reboot", strerror(errno));
+            close(disk_fd);
+            goto fail;
+        }
 #endif
-    ) {
+        if (pwrite_all(disk_fd, backup_after, bal, backup_off) < 0) {
+            fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
+                       "backup GPT write failed: %s; do not reboot", strerror(errno));
+            close(disk_fd);
+            goto fail;
+        }
+        uint8_t *verify = xmalloc(bal);
+        if (pread_all(disk_fd, verify, bal, backup_off) < 0 ||
+            memcmp(verify, backup_after, bal)
+#ifdef UNIXNU_TESTING
+            || test_inject("UNIXNU_TEST_FAIL_BACKUP_READBACK")
+#endif
+        ) {
+            free(verify);
+            fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
+                       "backup GPT readback failed; do not reboot");
+            close(disk_fd);
+            goto fail;
+        }
         free(verify);
-        fail_apply(plan_dir, "gpt-backup-writing", err, errlen,
-                   "backup GPT readback failed; do not reboot");
-        close(disk_fd);
-        goto fail;
+        plan_write_stage(plan_dir, "gpt-backup-verified", err, errlen);
     }
-    free(verify);
-    plan_write_stage(plan_dir, "gpt-backup-verified", err, errlen);
 
-    plan_write_stage(plan_dir, "gpt-primary-writing", err, errlen);
-    sync();
+gpt_primary_write:
+    {
+        if (disk_fd < 0) {
+            disk_fd = open(s.dev.disk, O_RDWR | O_CLOEXEC);
+            if (disk_fd < 0) {
+                fail_apply(plan_dir, "gpt-backup-verified", err, errlen,
+                           "cannot reopen %s: %s; backup GPT is already new, rerun apply",
+                           s.dev.disk, strerror(errno));
+                goto fail;
+            }
+        }
+        plan_write_stage(plan_dir, "gpt-primary-writing", err, errlen);
+        sync();
 #ifdef UNIXNU_TESTING
-    if (test_inject("UNIXNU_TEST_FAIL_PRIMARY_WRITE")) {
-        errno = EIO;
-        fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
-                   "primary GPT write failed: %s; do not reboot", strerror(errno));
-        close(disk_fd);
-        goto fail;
-    }
+        if (test_inject("UNIXNU_TEST_FAIL_PRIMARY_WRITE")) {
+            errno = EIO;
+            fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
+                       "primary GPT write failed: %s; do not reboot", strerror(errno));
+            close(disk_fd);
+            goto fail;
+        }
 #endif
-    if (pwrite_all(disk_fd, primary_after, pal, 0) < 0) {
-        fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
-                   "primary GPT write failed: %s; do not reboot", strerror(errno));
-        close(disk_fd);
-        goto fail;
-    }
-    uint8_t *primary_read = xmalloc(pal);
-    uint8_t *backup_read = xmalloc(bal);
-    if (pread_all(disk_fd, primary_read, pal, 0) < 0 ||
-        pread_all(disk_fd, backup_read, bal, backup_off) < 0 ||
-        memcmp(primary_read, primary_after, pal) ||
-        memcmp(backup_read, backup_after, bal)) {
+        if (pwrite_all(disk_fd, primary_after, pal, 0) < 0) {
+            fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
+                       "primary GPT write failed: %s; do not reboot", strerror(errno));
+            close(disk_fd);
+            goto fail;
+        }
+        off_t backup_off = (off_t)(s.dev.total_sectors - 1 - s.gpt.blocks) * (off_t)s.dev.sector;
+        uint8_t *primary_read = xmalloc(pal);
+        uint8_t *backup_read = xmalloc(bal);
+        if (pread_all(disk_fd, primary_read, pal, 0) < 0 ||
+            pread_all(disk_fd, backup_read, bal, backup_off) < 0 ||
+            memcmp(primary_read, primary_after, pal) ||
+            memcmp(backup_read, backup_after, bal)) {
+            free(primary_read);
+            free(backup_read);
+            fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
+                       "GPT readback mismatch; do not reboot");
+            close(disk_fd);
+            goto fail;
+        }
         free(primary_read);
         free(backup_read);
-        fail_apply(plan_dir, "gpt-primary-writing", err, errlen,
-                   "GPT readback mismatch; do not reboot");
-        close(disk_fd);
-        goto fail;
-    }
-    free(primary_read);
-    free(backup_read);
-    plan_write_stage(plan_dir, "gpt-primary-verified", err, errlen);
+        plan_write_stage(plan_dir, "gpt-primary-verified", err, errlen);
 
-    gpt_t before_gpt, after_gpt;
-    memset(&before_gpt, 0, sizeof(before_gpt));
-    memset(&after_gpt, 0, sizeof(after_gpt));
-    if (gpt_parse(primary_before, pbl, backup_before, bbl, s.dev.sector, s.dev.total_sectors,
-                  &before_gpt, err, errlen) < 0 ||
-        gpt_read_fd(disk_fd, s.dev.sector, s.dev.total_sectors, &after_gpt, err, errlen) < 0) {
-        apply_log(plan_dir, "FAILED stage=gpt-primary-verified: %s", err);
+        gpt_t before_gpt, after_gpt;
+        memset(&before_gpt, 0, sizeof(before_gpt));
+        memset(&after_gpt, 0, sizeof(after_gpt));
+        if (gpt_parse(primary_before, pbl, backup_before, bbl, s.dev.sector, s.dev.total_sectors,
+                      &before_gpt, err, errlen) < 0 ||
+            gpt_read_fd(disk_fd, s.dev.sector, s.dev.total_sectors, &after_gpt, err, errlen) < 0) {
+            apply_log(plan_dir, "FAILED stage=gpt-primary-verified: %s", err);
+            gpt_free(&before_gpt);
+            gpt_free(&after_gpt);
+            close(disk_fd);
+            goto fail;
+        }
+        if (region_matches(after_gpt.primary, after_gpt.primary_len, primary_after, pal,
+                           "primary GPT after readback", err, errlen) < 0 ||
+            region_matches(after_gpt.backup, after_gpt.backup_len, backup_after, bal,
+                           "backup GPT after readback", err, errlen) < 0 ||
+            gpt_verify_after(&after_gpt, &before_gpt, &plan, err, errlen) < 0) {
+            apply_log(plan_dir, "FAILED stage=gpt-primary-verified: %s", err);
+            gpt_free(&before_gpt);
+            gpt_free(&after_gpt);
+            close(disk_fd);
+            goto fail;
+        }
         gpt_free(&before_gpt);
         gpt_free(&after_gpt);
         close(disk_fd);
-        goto fail;
+        sync();
     }
-    if (region_matches(after_gpt.primary, after_gpt.primary_len, primary_after, pal,
-                       "primary GPT after readback", err, errlen) < 0 ||
-        region_matches(after_gpt.backup, after_gpt.backup_len, backup_after, bal,
-                       "backup GPT after readback", err, errlen) < 0 ||
-        gpt_verify_after(&after_gpt, &before_gpt, &plan, err, errlen) < 0) {
-        apply_log(plan_dir, "FAILED stage=gpt-primary-verified: %s", err);
-        gpt_free(&before_gpt);
-        gpt_free(&after_gpt);
-        close(disk_fd);
-        goto fail;
-    }
-    gpt_free(&before_gpt);
-    gpt_free(&after_gpt);
-    close(disk_fd);
-    sync();
 
     if (plan_write_stage(plan_dir, "complete", err, errlen) < 0)
         goto fail;

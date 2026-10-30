@@ -221,7 +221,11 @@ int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *inf
     uint64_t expected = f2fs_expected_blocks(before, request);
     if (expected > limit_blocks)
         return failf(err, errlen, "F2FS section rounding exceeds the planned partition");
-    if (before > request && before - request >= info->f_bavail)
+    /* The free-space check needs statfs, which only exists while /data is
+     * mounted. It has already run during planning and again on the mounted
+     * recheck; by the time the shrink happens /data is gone on purpose, so
+     * f_bavail is 0 here and the kernel's own ioctl is the authority. */
+    if (info->mounted && before > request && before - request >= info->f_bavail)
         return failf(err, errlen, "insufficient free F2FS space; kernel also needs reserved space");
 #ifdef UNIXNU_TESTING
     {

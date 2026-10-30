@@ -812,8 +812,35 @@ int plan_identity_match(const plan_info_t *plan, const state_t *s, char *err, si
 
 int plan_match_state(const plan_info_t *plan, const state_t *s, char *err, size_t errlen)
 {
+    return plan_match_state_ex(plan, s, 0, err, errlen);
+}
+
+int plan_match_state_ex(const plan_info_t *plan, const state_t *s, int resuming,
+                        char *err, size_t errlen)
+{
     if (plan_identity_match(plan, s, err, errlen) < 0)
         return -1;
+    if (resuming) {
+        /* A resume starts after the shrink, so the filesystem may already be at
+         * its new size and the GPT may already carry the backup (or both)
+         * copies. Everything else must still be exactly as planned. */
+        if (s->have_fs && plan->fs_blocks != s->fs.blocks &&
+            plan->expected_blocks != s->fs.blocks)
+            return failf(err, errlen,
+                         "F2FS is %" PRIu64 " blocks, neither the planned %" PRIu64
+                         " nor the target %" PRIu64,
+                         s->fs.blocks, plan->fs_blocks, plan->expected_blocks);
+        char hex[65];
+        int prim_ok = hash_region_hex(s->gpt.primary, s->gpt.primary_len, hex) == 0 &&
+                      !strcasecmp(hex, plan->gpt_primary_sha256);
+        int bak_ok = hash_region_hex(s->gpt.backup, s->gpt.backup_len, hex) == 0 &&
+                     !strcasecmp(hex, plan->gpt_backup_sha256);
+        if (!prim_ok && !bak_ok)
+            return failf(err, errlen, "neither GPT copy matches the plan; do not reboot");
+        /* The deep GPT/F2FS/metadata comparison below belongs to the fresh-plan
+         * path; a resume validates the specifics against the bundle images. */
+        return 0;
+    }
     char hex[65];
     hash_region_hex(s->gpt.primary, s->gpt.primary_len, hex);
     if (strcasecmp(hex, plan->gpt_primary_sha256))

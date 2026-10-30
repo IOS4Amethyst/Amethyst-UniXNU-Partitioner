@@ -32,11 +32,11 @@ device-matched plan has been reviewed and explicitly confirmed.
 2. **Plan** repeats those checks, computes a tail split, rounds the F2FS size to
    whole sections, and writes a plan bundle containing the original and proposed
    GPT regions. It performs no partition or filesystem writes.
-3. **Apply** reloads that bundle, verifies every hash and identity again, shrinks
-   F2FS through `F2FS_IOC_RESIZE_FS`, unmounts `/data`, writes and verifies the
-   backup GPT, then writes and verifies the primary GPT. It refuses to run unless
-   the bundle, device, serial, disk geometry, GPT bytes, F2FS state and metadata
-   hash all match and the exact confirmation phrase is supplied.
+3. **Apply** reloads that bundle, verifies every hash and identity again,
+   unmounts `/data`, shrinks F2FS through `F2FS_IOC_RESIZE_FS`, writes and
+   verifies the backup GPT, then writes and verifies the primary GPT. It refuses
+   to run unless the bundle, device, serial, disk geometry, GPT bytes, F2FS state
+   and metadata hash all match and the exact confirmation phrase is supplied.
 
 The split preserves the `userdata` start LBA, type GUID, unique GUID and
 attributes. `metadata` is never modified. The new partition uses the Linux
@@ -159,15 +159,28 @@ sector size, `userdata`/`metadata` geometry and GUIDs, both GPT images, F2FS
 superblock and checkpoint state, metadata content hash, and the plan's exact
 confirmation phrase. Only then does it create a session and start the shrink.
 
-After the shrink it verifies F2FS offline, unmounts `/data`, rechecks metadata,
-writes and reads back the backup GPT, writes and reads back the primary GPT, and
-validates both copies and partition identities before marking the stage
-`complete`.
+The order is deliberate. `/data` is unmounted **before** the shrink, because the
+resize ioctl rewrites the F2FS superblock while the checkpoint keeps the old
+`user_block_count` until the kernel commits one, and it only commits on a clean
+unmount. Shrinking first and unmounting second means a busy `/data` can leave the
+superblock and the checkpoint disagreeing, with the shrink already done. Doing
+the unmount first makes a busy `/data` cost nothing: apply stops at `revalidated`
+with the filesystem untouched.
 
-There is **no automatic retry and no rollback**. If apply stops, keep the plan
-bundle and recovery session; do not reboot or repartition. Run the Apply ZIP in
-`mode = recover` (or the helper's `recover` command) to see the last persisted
-stage and log.
+After the shrink apply verifies F2FS offline, rechecks metadata, writes and reads
+back the backup GPT, writes and reads back the primary GPT, and validates both
+copies and partition identities before marking the stage `complete`.
+
+There is **no automatic retry and no rollback**, but an interrupted apply can be
+**resumed**. Run the same Apply request again: the recorded stage is remeasured
+against the device instead of being trusted, so apply either continues from where
+it stopped or refuses with the reason. Specifically it re-reads the F2FS
+superblock (accepting either the planned size or the target size), classifies the
+on-disk GPT as original / backup-only / both-written, and skips every step whose
+effect is already present. A shrink that already happened is not repeated.
+
+Run the Apply ZIP in `mode = recover` (or the helper's `recover` command) to see
+the last persisted stage and log without touching anything.
 
 ### 5. Verify after reboot
 
@@ -215,7 +228,7 @@ then have the device maintainer assess the captured state.
 Apply refuses, without writing to the disk, when any of these fail:
 
 - bundle `SHA256SUMS` or a file changed;
-- `stage` is not exactly `planned`;
+- `stage` is neither `planned` nor one of the resumable interrupted stages;
 - plan schema/tool/version, plan ID, session or internal consistency is bad;
 - confirmation phrase differs by even one character;
 - `acknowledge_data_loss` is absent;
@@ -224,7 +237,8 @@ Apply refuses, without writing to the disk, when any of these fail:
 - `userdata` type/unique GUID or attributes changed;
 - `unixnu` already exists;
 - primary or backup GPT bytes differ from the bundle's `before` images;
-- F2FS is not mounted read-write with checkpoints enabled;
+- F2FS is not mounted read-write with checkpoints enabled (fresh runs only; a
+  resume requires `/data` to be unmounted);
 - F2FS UUID, features, block count or superblock hash changed;
 - metadata content hash changed;
 - plan bundle is on `/data`, `/sdcard`, emulated storage, or the same

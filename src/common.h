@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define TOOL_NAME "amethyst-unixnu-partitioner"
-#define TOOL_VERSION "0.3.0"
+#define TOOL_VERSION "0.4.0"
 #define MIB UINT64_C(1048576)
 #define GIB UINT64_C(1073741824)
 #define GPT_ENTRY_SIZE 128U
@@ -402,6 +402,8 @@ int plan_check_stage(const char *plan_dir, const char *expect, char *stage, size
 int plan_write_stage(const char *plan_dir, const char *stage, char *err, size_t errlen);
 int plan_bundle_verify(const char *plan_dir, char *err, size_t errlen);
 int plan_match_state(const plan_info_t *plan, const state_t *s, char *err, size_t errlen);
+int plan_match_state_ex(const plan_info_t *plan, const state_t *s, int resuming,
+                        char *err, size_t errlen);
 int plan_identity_match(const plan_info_t *plan, const state_t *s, char *err, size_t errlen);
 int plan_read_file(const char *plan_dir, const char *name, uint8_t **data, size_t *len,
                    char *err, size_t errlen);

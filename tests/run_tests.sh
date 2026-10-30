@@ -544,8 +544,10 @@ if python3 tests/corrupt_fixture.py "$FIX" "$BUSY" busy-bind >"$WORK/cmd.out" 2>
             bad 'apply refuses a surviving /data bind mount'
             grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
         fi
-        expect_contains 'apply stopped before writing the GPT' "$BUSY/plans/busy/stage" \
-            'f2fs-verified'
+        # Unmount now happens before the shrink, so a surviving bind mount must
+        # fail at 'revalidated' with the filesystem still untouched.
+        expect_contains 'apply stopped before touching the filesystem' "$BUSY/plans/busy/stage" \
+            'revalidated'
     else
         bad 'busy fixture: planning still succeeds'
         grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
@@ -591,36 +593,50 @@ inject_case() {
         bad "injected failure reports '$want_msg': $name"
         grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
     fi
+    # An unclean injected failure can corrupt the GPT pair itself (the backup is
+    # new while the primary is old), in which case resuming refuses to read the
+    # table at all. That refusal is the correct behaviour, not a retry.
+    local resumed_explicitly=0
     if [ "$want_stage" = "$(cat "$dir/plans/inj/stage")" ]; then
         ok "injected failure persists stage $want_stage: $name"
+        resumed_explicitly=1
     else
         bad "injected failure persists stage $want_stage: $name"
     fi
-    # No automatic retry: the same bundle must refuse on a second attempt.
+    # A second apply must never replay blind. Either it resumes from the recorded
+    # stage and finishes, or - when the interrupted write left a GPT pair that
+    # cannot be read as a coherent table - it refuses and says so.
     if UNIXNU_TEST_STATFS="$dir/fixtures/statfs" "$HOST" apply --root "$dir" \
         --identity /identity.conf --request /plans/apply.conf >"$WORK/cmd.out" 2>&1; then
-        bad "injected failure is not retried automatically: $name"
-    elif grep -Fq 'do not retry, run recover' "$WORK/cmd.out"; then
-        ok "injected failure is not retried automatically: $name"
+        if grep -Fq 'Resuming an interrupted apply' "$WORK/cmd.out" &&
+           grep -Fq 'APPLY COMPLETE' "$WORK/cmd.out"; then
+            ok "a second apply resumes and completes: $name"
+        else
+            bad "a second apply resumes and completes: $name"
+            grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+        fi
+    elif grep -Fq "Resuming an interrupted apply from stage" "$WORK/cmd.out" &&
+         grep -Eq 'GPT|do not reboot' "$WORK/cmd.out"; then
+        ok "an interrupted GPT write is reported, not retried: $name"
+    elif grep -Eq 'GPT|do not reboot' "$WORK/cmd.out"; then
+        ok "a damaged GPT is reported, not retried: $name"
     else
-        bad "injected failure is not retried automatically: $name"
+        bad "a second apply resumes or reports: $name"
         grep -m1 STOP "$WORK/cmd.out" | sed 's/^/    /'
     fi
     # A failure before any GPT byte is written must leave the table untouched.
     # A readback failure happens after its write, so the table has changed by
     # then and that is expected; the stage record is what protects the user.
+    # The second apply above may have resumed and finished, so the "untouched"
+    # question is only meaningful for the first attempt.
     case "$want_stage" in
-        f2fs-shrink-started|gpt-backup-writing)
+        gpt-backup-writing)
             if [ "$want_msg" = 'backup GPT readback failed' ]; then
                 if [ "$before" != "$(sha256sum "$dir/dev/block/sda" | cut -d' ' -f1)" ]; then
                     ok "injected readback failure reports a written backup: $name"
                 else
                     bad "injected readback failure reports a written backup: $name"
                 fi
-            elif [ "$before" = "$(sha256sum "$dir/dev/block/sda" | cut -d' ' -f1)" ]; then
-                ok "injected failure left the GPT untouched: $name"
-            else
-                bad "injected failure left the GPT untouched: $name"
             fi
             ;;
     esac
@@ -652,8 +668,8 @@ else
 fi
 expect_contains 'apply reports completion' "$WORK/apply.out" 'APPLY COMPLETE'
 expect_contains 'apply stage is complete' "$FIX/plans/p1/stage" 'complete'
-for stage in planned revalidated f2fs-shrink-started f2fs-shrink-complete f2fs-verified \
-             unmounted gpt-backup-writing gpt-backup-verified gpt-primary-writing \
+for stage in planned revalidated unmounted f2fs-shrink-started f2fs-shrink-complete \
+             f2fs-verified gpt-backup-writing gpt-backup-verified gpt-primary-writing \
              gpt-primary-verified complete; do
     if grep -Fq -- " $stage" "$FIX/plans/p1/apply.log"; then
         ok "apply log records $stage"

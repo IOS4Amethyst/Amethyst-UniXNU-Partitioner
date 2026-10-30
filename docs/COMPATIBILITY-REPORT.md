@@ -55,8 +55,8 @@ ZIP cannot reproduce it.
 | F2FS shrink | `f2fs-shrink.c` ioctl + section rounding | Same algorithms in `src/f2fs.c`; rounding functions match upstream exactly |
 | Superblock pair | `f2fs-shrink.c` refuses unless both copies are byte-identical | Same refusal where neither copy is valid; a mismatch with one valid copy is a warning that names the active copy, because Linux mounts that filesystem |
 | Backups | Optional, per `9fd45ef` | Apply refuses to run unless the operator confirms a verified off-device backup exists |
-| Sequencing | `twrp.sh`: shrink, verify, unmount, write backup GPT, verify, write primary GPT, verify | Same order, with a persisted `stage` file and a post-unmount metadata re-hash before any GPT byte is written |
-| Interruption | Documented as unrecoverable; no automatic rollback | Same stance; stage and errors are persisted and the bundle refuses a second run |
+| Sequencing | `twrp.sh`: shrink, verify, unmount, write backup GPT, verify, write primary GPT, verify | Same writes, but `/data` is unmounted *before* the shrink (see below), with a persisted `stage` file and an offline metadata re-hash before any GPT byte is written |
+| Interruption | Documented as unrecoverable; no automatic rollback | No automatic rollback; stage and errors are persisted, and a second run resumes only after remeasuring the device against the recorded stage |
 
 Checks that upstream performs on the host (ADB device selection, multi-device
 ambiguity) have no recovery-side equivalent and are therefore replaced by
