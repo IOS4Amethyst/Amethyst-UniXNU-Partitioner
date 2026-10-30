@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define TOOL_NAME "amethyst-unixnu-partitioner"
-#define TOOL_VERSION "0.4.0"
+#define TOOL_VERSION "0.4.1"
 #define MIB UINT64_C(1048576)
 #define GIB UINT64_C(1073741824)
 #define GPT_ENTRY_SIZE 128U

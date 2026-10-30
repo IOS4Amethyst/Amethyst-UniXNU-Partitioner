@@ -548,6 +548,35 @@ if python3 tests/corrupt_fixture.py "$FIX" "$BUSY" busy-bind >"$WORK/cmd.out" 2>
         # fail at 'revalidated' with the filesystem still untouched.
         expect_contains 'apply stopped before touching the filesystem' "$BUSY/plans/busy/stage" \
             'revalidated'
+        # The offload path tears down every mount under /data before /data
+        # itself, deepest first, and must never use MS_FORCE or MNT_DETACH.
+        BUSY2="$WORK/corrupt/busy2"
+        if python3 tests/corrupt_fixture.py "$FIX" "$BUSY2" busy-bind >"$WORK/cmd.out" 2>&1; then
+            mkdir -p "$BUSY2/plans"
+            printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/busy\n' \
+                >"$BUSY2/plans/req.conf"
+            if UNIXNU_TEST_STATFS="$BUSY2/fixtures/statfs" "$HOST" plan --root "$BUSY2" \
+                --identity /identity.conf --request /plans/req.conf >"$WORK/cmd.out" 2>&1; then
+                c2=$(sed -n 's/^confirm=//p' "$BUSY2/plans/busy/plan.conf")
+                printf 'mode = apply\nplan = /plans/busy\nconfirm = %s\nacknowledge_data_loss = yes\n' \
+                    "$c2" >"$BUSY2/plans/apply.conf"
+                # No FAKE_UNMOUNT: the real umount2 path runs. It fails offline
+                # (EPERM) rather than EBUSY, but it must still stop before the
+                # shrink and must name the mount it could not remove.
+                if env UNIXNU_TEST_STATFS="$BUSY2/fixtures/statfs" UNIXNU_TEST_FAKE_SHRINK=1 \
+                    "$HOST" apply --root "$BUSY2" --identity /identity.conf \
+                    --request /plans/apply.conf >"$WORK/cmd.out" 2>&1; then
+                    bad 'apply does not proceed while /data cannot be unmounted'
+                elif grep -Fq 'cannot unmount /data' "$WORK/cmd.out"; then
+                    ok 'apply names the mount it cannot remove'
+                else
+                    bad 'apply names the mount it cannot remove'
+                    grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'
+                fi
+                expect_contains 'real unmount path stops before the filesystem' \
+                    "$BUSY2/plans/busy/stage" 'revalidated'
+            fi
+        fi
     else
         bad 'busy fixture: planning still succeeds'
         grep -m2 STOP "$WORK/cmd.out" | sed 's/^/    /'

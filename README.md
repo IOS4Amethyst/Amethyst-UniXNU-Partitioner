@@ -159,6 +159,14 @@ sector size, `userdata`/`metadata` geometry and GUIDs, both GPT images, F2FS
 superblock and checkpoint state, metadata content hash, and the plan's exact
 confirmation phrase. Only then does it create a session and start the shrink.
 
+Unmounting means removing **every** mount at or beneath `/data`, deepest first,
+not just `/data` itself. A recovery UI bind-mounts `/data/user/0`, `/sdcard` and
+`/mnt/runtime/*` onto the decrypted device; a bare `umount2("/data")` is refused
+while those exist, and they are the UI's own mounts, so the operator cannot remove
+them by hand. Apply takes them down in the kernel's required order. It never uses
+`MS_FORCE` or `MNT_DETACH`, and if any step fails it stops and names the mount and
+the process holding it.
+
 The order is deliberate. `/data` is unmounted **before** the shrink, because the
 resize ioctl rewrites the F2FS superblock while the checkpoint keeps the old
 `user_block_count` until the kernel commits one, and it only commits on a clean

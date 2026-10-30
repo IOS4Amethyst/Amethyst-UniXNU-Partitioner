@@ -622,12 +622,63 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
     } else
 #endif
     {
-        char data_path[PATH_MAX];
-        if (root_join(p, data_path, sizeof(data_path), "/data") < 0)
-            return failf(err, errlen, "path too long");
-        if (umount2(data_path, 0) < 0)
-            return failf(err, errlen, "cannot unmount /data: %s; do not force or lazily unmount",
-                         strerror(errno));
+        /*
+         * Unmount every mount whose target is /data or lies beneath it, deepest
+         * first, then /data itself.
+         *
+         * A recovery UI commonly bind-mounts /data/user/0, /sdcard and
+         * /mnt/runtime directories onto the decrypted device. A single
+         * umount2("/data") is
+         * refused while any of those exist, and the operator cannot remove them
+         * because they are the UI's own mounts. Removing them here - in the order
+         * the kernel requires - is what makes the unmount possible at all.
+         *
+         * Without MS_FORCE and without MNT_DETACH: nothing is torn out from under
+         * a live user, and every step must succeed or the whole thing stops.
+         */
+        char targets[32][PATH_MAX];
+        size_t ntargets = 0;
+        const size_t tlen = PATH_MAX;
+        if (mounts_scan(p, dev, mounts, err, errlen) < 0)
+            return -1;
+        for (size_t i = 0; i < mounts->n && ntargets < ARRAY_LEN(targets); i++) {
+            const char *t = mounts->items[i].target;
+            if (strcmp(t, "/data") && strncmp(t, "/data/", 6))
+                continue;
+            snprintf(targets[ntargets], sizeof(targets[0]), "%s", t);
+            ntargets++;
+        }
+        /* Deepest path first: /data/user/0 goes before /data. */
+        for (size_t i = 1; i < ntargets; i++) {
+            char key[PATH_MAX];
+            snprintf(key, sizeof(key), "%s", targets[i]);
+            size_t keylen = strlen(key);
+            size_t j = i;
+            while (j > 0 && strlen(targets[j - 1]) < keylen) {
+                memcpy(targets[j], targets[j - 1], tlen);
+                j--;
+            }
+            memcpy(targets[j], key, tlen);
+        }
+        for (size_t i = 0; i < ntargets; i++) {
+            /* /data itself is unmounted last, whatever the sort did. */
+            if (!strcmp(targets[i], "/data") && i + 1 < ntargets)
+                continue;
+            char real[PATH_MAX];
+            if (root_join(p, real, sizeof(real), targets[i]) < 0)
+                return failf(err, errlen, "path too long");
+            if (umount2(real, 0) == 0)
+                continue;
+            int saved = errno;
+            if (saved == EINVAL || saved == ENOENT)
+                continue; /* already gone */
+            char pids[256] = "";
+            (void)open_usage_scan(p, dev, pids, sizeof(pids));
+            return failf(err, errlen,
+                         "cannot unmount %s: %s%s%s; do not force or lazily unmount",
+                         targets[i], strerror(saved), pids[0] ? "; " : "",
+                         pids[0] ? pids : "");
+        }
     }
     return mounts_check_unmounted(p, dev, mounts, err, errlen);
 }
