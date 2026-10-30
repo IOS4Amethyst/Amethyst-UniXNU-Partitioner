@@ -582,6 +582,25 @@ int mounts_check_unmounted(const paths_t *p, device_t *dev, mounts_t *mounts, ch
     return 0;
 }
 
+#ifdef UNIXNU_TESTING
+/* Resolve a mount source path to the st_dev of what it points at.
+ * Offline fixtures use regular files whose st_dev is meaningful; on a real
+ * device this is the block device's rdev, matching mounts_scan's logic. */
+static dev_t source_stat_dev(const paths_t *p, const char *source)
+{
+    char joined[PATH_MAX];
+    struct stat st;
+    if (source[0] != '/' || root_join(p, joined, sizeof(joined), source) < 0 ||
+        stat(joined, &st) < 0)
+        return 0;
+#ifdef UNIXNU_TESTING
+    if (!st.st_rdev)
+        return st.st_dev;
+#endif
+    return st.st_rdev ? st.st_rdev : st.st_dev;
+}
+#endif
+
 int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char *err, size_t errlen)
 {
 #ifdef UNIXNU_TESTING
@@ -607,12 +626,22 @@ int mounts_unmount_data(const paths_t *p, device_t *dev, mounts_t *mounts, char 
                     char *save = NULL;
                     char *source = strtok_r(copy, " \t\n", &save);
                     char *target = strtok_r(NULL, " \t\n", &save);
-                    if (source && target && !strcmp(target, "/data"))
-                        continue;
-                    /* A bind mount under /data survives only when the test asks
-                     * for it; otherwise emulate a full, clean unmount. */
-                    if (!keep_bind && target && !strncmp(target, "/data/", 6))
-                        continue;
+                    /* Emulate what the real path does: remove /data and every
+                     * other mount that sits on the userdata device, including
+                     * /sdcard and /storage/emulated which are not under /data.
+                     * A mount under /data survives only when KEEP_BIND is set. */
+                    if (source && target) {
+                        int is_data = !strcmp(target, "/data");
+                        int under_data = !strncmp(target, "/data/", 6);
+                        int on_userdata =
+                            dev->mapped_rdev && source_stat_dev(p, source) == dev->mapped_rdev;
+                        if (is_data)
+                            continue;
+                        if (under_data && !keep_bind)
+                            continue;
+                        if (on_userdata && !under_data)
+                            continue;
+                    }
                     seen = 1;
                     size_t len = strlen(line);
                     if (used + len + 1 < sizeof(kept)) {

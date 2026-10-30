@@ -763,6 +763,47 @@ expect_ok 'recover reads the completed session' \
     "$HOST" recover --root "$FIX" --plan /plans/p1
 expect_contains 'recover reports completion' "$WORK/cmd.out" 'Last persisted stage: complete'
 
+echo '== resume from a crashed run (stage f2fs-shrink-started) =='
+# On hardware the 0.5.0 ioctl crashed the recovery kernel right after the
+# 'f2fs-shrink-started' stage was recorded. The filesystem was untouched, so a
+# rerun must complete. It must also unmount /data itself - the recovery session
+# normally has it mounted again by the time the operator retries.
+CRASH="$WORK/resume/crash"
+if python3 tests/make_fixture.py "$CRASH" --sectors=524288 >"$WORK/cmd.out" 2>&1; then
+    mkdir -p "$CRASH/plans"
+    printf 'mode = plan\nsize_gib = 0.0625\nplan_dir = /plans/crash\n' >"$CRASH/plans/req.conf"
+    if UNIXNU_TEST_STATFS="$CRASH/fixtures/statfs" "$HOST" plan --root "$CRASH" \
+        --identity /identity.conf --request /plans/req.conf >"$WORK/cmd.out" 2>&1; then
+        ok 'crash fixture: planning succeeds'
+        cc=$(sed -n 's/^confirm=//p' "$CRASH/plans/crash/plan.conf")
+        printf 'mode = apply\nplan = /plans/crash\nconfirm = %s\nacknowledge_data_loss = yes\n' \
+            "$cc" >"$CRASH/plans/apply.conf"
+        # Reproduce the exact interrupted state and the recovery-style mounts.
+        printf 'f2fs-shrink-started\n' >"$CRASH/plans/crash/stage"
+        mkdir -p "$CRASH/sdcard" "$CRASH/data/user/0"
+        ln -f "$CRASH/dev/block/dm-0" "$CRASH/sdcard/placeholder" 2>/dev/null || true
+        cat >"$CRASH/proc/mounts" <<MOUNTS
+/dev/block/dm-0 /data f2fs rw,checkpoint=enable 0 0
+/dev/block/dm-0 /data/user/0 f2fs rw,checkpoint=enable 0 0
+/dev/block/dm-0 /sdcard f2fs rw,checkpoint=enable 0 0
+MOUNTS
+        if env UNIXNU_TEST_STATFS="$CRASH/fixtures/statfs" UNIXNU_TEST_FAKE_SHRINK=1 \
+            UNIXNU_TEST_FAKE_UNMOUNT=1 "$HOST" apply --root "$CRASH" \
+            --identity /identity.conf --request /plans/apply.conf >"$WORK/cmd.out" 2>&1; then
+            ok 'a crashed shrink resumes and completes'
+        else
+            bad 'a crashed shrink resumes and completes'
+            grep -m3 STOP "$WORK/cmd.out" | sed 's/^/    /'
+        fi
+        expect_contains 'resumed run reaches complete' "$CRASH/plans/crash/stage" 'complete'
+        expect_contains 'resume announces itself' "$WORK/cmd.out" 'Resuming an interrupted apply'
+    else
+        bad 'crash fixture: planning succeeds'
+    fi
+else
+    bad 'crash fixture builds'
+fi
+
 echo '== post-reboot verify =='
 expect_ok 'mock reboot updates the kernel partition view' \
     python3 tests/mock_reboot.py "$FIX" "$FIX/plans/p1"

@@ -182,6 +182,13 @@ superblock and the checkpoint disagreeing, with the shrink already done. Doing
 the unmount first makes a busy `/data` cost nothing: apply stops at `revalidated`
 with the filesystem untouched.
 
+The resize itself needs a **mounted** F2FS instance: `F2FS_IOC_RESIZE_FS` acts on
+the in-memory filesystem object, not on a bare block device, and calling it on an
+unmounted fd reaches the kernel's resize path with no superblock to work on. So
+apply mounts the decrypted mapping at a private `mkdtemp` directory, resizes
+through that mount, and unmounts it. `/data` stays unmounted throughout, and the
+unmount is what commits the checkpoint that makes the new size survive a remount.
+
 After the shrink apply verifies F2FS offline, rechecks metadata, writes and reads
 back the backup GPT, writes and reads back the primary GPT, and validates both
 copies and partition identities before marking the stage `complete`.

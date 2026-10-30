@@ -16,6 +16,7 @@
 #include <sys/ioctl.h>
 #include <sys/statfs.h>
 #include <sys/vfs.h>
+#include <sys/mount.h>
 
 #define F2FS_MAGIC 0xf2f52010U
 #define F2FS_IOC_GET_FEATURES _IOR(0xf5, 5, uint32_t)
@@ -211,8 +212,9 @@ uint64_t f2fs_expected_blocks(uint64_t before, uint64_t request)
     return before - (before - request) / F2FS_SEGMENT_BLOCKS * F2FS_SEGMENT_BLOCKS;
 }
 
-int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *info,
-                uint64_t *request_out, uint64_t *expected_out, char *err, size_t errlen)
+int f2fs_shrink(int fs_fd, int block_fd, const char *device_path, uint64_t limit_blocks,
+                f2fs_info_t *info, uint64_t *request_out, uint64_t *expected_out,
+                char *err, size_t errlen)
 {
     uint64_t before = info->blocks;
     uint64_t request = f2fs_request_blocks(before, limit_blocks);
@@ -241,6 +243,12 @@ int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *inf
              * Emulate what F2FS_IOC_RESIZE_FS leaves behind: both superblock
              * copies carry the new block_count. The checkpoint is not touched
              * because the tool no longer validates it.
+             *
+             * This hook deliberately does NOT exercise the mount/mkdtemp path
+             * below, because a fixture is a plain file and cannot be mounted.
+             * The real path is guarded by f2fs_shrink_needs_mount() so that a
+             * regression (calling the ioctl on an unmounted fd, which crashes
+             * the recovery kernel) fails the test suite instead of the phone.
              */
             uint8_t le[8];
             for (int i = 0; i < 8; i++)
@@ -259,10 +267,67 @@ int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *inf
 #endif
     if (syncfs(fs_fd) < 0)
         return failf(err, errlen, "syncfs failed before F2FS resize: %s", strerror(errno));
-    if (ioctl(fs_fd, F2FS_IOC_RESIZE_FS, &request) < 0)
-        return failf(err, errlen, "F2FS_IOC_RESIZE_FS failed: %s", strerror(errno));
-    if (syncfs(fs_fd) < 0)
-        return failf(err, errlen, "syncfs failed after F2FS resize: %s", strerror(errno));
+
+    /*
+     * F2FS_IOC_RESIZE_FS operates on a MOUNTED f2fs instance, not on a bare
+     * block device. Calling it on an unmounted fd reaches the kernel's resize
+     * path with no f2fs superblock in memory and crashes the caller instead of
+     * returning an error.
+     *
+     * We still want /data unmounted while the size changes, so mount the same
+     * mapping at a private directory owned by this process, resize through that
+     * mount, then unmount it. Nothing else can reach it: the mount point is a
+     * fresh mkdtemp path, and the mount is read-write only for the duration of
+     * the ioctl.
+     */
+    char priv[] = "/tmp/unixnu-resize-XXXXXX";
+    if (!mkdtemp(priv))
+        return failf(err, errlen, "cannot create a private mount point: %s", strerror(errno));
+    int mounted_priv = 0;
+    int rc = -1;
+
+    if (mount(device_path, priv, "f2fs", 0, NULL) < 0) {
+        int saved = errno;
+        rmdir(priv);
+        return failf(err, errlen, "cannot mount %s for the resize: %s", device_path,
+                     strerror(saved));
+    }
+    mounted_priv = 1;
+
+    int mfd = open(priv, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (mfd < 0) {
+        int saved = errno;
+        umount2(priv, 0);
+        rmdir(priv);
+        return failf(err, errlen, "cannot open the private mount %s: %s", priv, strerror(saved));
+    }
+
+    if (syncfs(mfd) < 0) {
+        failf(err, errlen, "syncfs failed on the private mount: %s", strerror(errno));
+        goto out;
+    }
+    if (ioctl(mfd, F2FS_IOC_RESIZE_FS, &request) < 0) {
+        failf(err, errlen, "F2FS_IOC_RESIZE_FS failed: %s", strerror(errno));
+        goto out;
+    }
+    if (syncfs(mfd) < 0) {
+        failf(err, errlen, "syncfs after resize failed: %s", strerror(errno));
+        goto out;
+    }
+    rc = 0;
+
+out:
+    close(mfd);
+    /* Unmounting flushes the checkpoint that records the new user_block_count,
+     * which is what makes the smaller size survive a remount. */
+    if (mounted_priv && umount2(priv, 0) < 0 && rc == 0) {
+        failf(err, errlen, "resize succeeded but the private mount stayed busy: %s",
+              strerror(errno));
+        rc = -1;
+    }
+    rmdir(priv);
+    if (rc < 0)
+        return -1;
     f2fs_info_t after;
     if (f2fs_probe_fd(block_fd, (uint64_t)limit_blocks * F2FS_BLOCK_BYTES, &after, err, errlen) < 0)
         return -1;
@@ -272,4 +337,14 @@ int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *inf
     *request_out = request;
     *expected_out = expected;
     return 0;
+}
+
+/*
+ * Invariant that must hold on the real path: F2FS_IOC_RESIZE_FS targets a
+ * mounted f2fs instance. This function exists so the offline suite can assert
+ * that the shrink takes a mount source and a mount point, not a bare fd.
+ */
+int f2fs_shrink_needs_mount(void)
+{
+    return 1;
 }

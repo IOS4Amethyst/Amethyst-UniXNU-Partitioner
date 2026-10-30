@@ -269,6 +269,17 @@ static void test_gpt_layout(void)
     fake_gpt_free(&f);
 }
 
+/*
+ * Regression guard: the 0.5.0 runtime called F2FS_IOC_RESIZE_FS on an unmounted
+ * block device and the recovery kernel crashed. The ioctl only works on a
+ * mounted f2fs instance, so the shrink must mount the mapping privately. If
+ * anyone collapses that back to a bare-fd ioctl, this assertion fails.
+ */
+static void test_resize_requires_mount(void)
+{
+    CHECK(f2fs_shrink_needs_mount() == 1);
+}
+
 int selftest_run(void)
 {
     failures = 0;
@@ -276,6 +287,7 @@ int selftest_run(void)
     test_parse();
     test_uuid();
     test_f2fs_rounding();
+    test_resize_requires_mount();
     test_gpt_layout();
     if (failures)
         fprintf(stderr, "SELFTEST FAILED: %d checks\n", failures);

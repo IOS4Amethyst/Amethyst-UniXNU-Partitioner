@@ -334,16 +334,26 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
             return failf(err, errlen,
                          "plan stage is '%s', expected 'planned' or an interrupted stage; "
                          "create a fresh plan", stage);
-        if (mounts_check_unmounted(p, &s.dev, &s.mounts, err, errlen) < 0) {
-            state_free(&s);
-            return -1;
-        }
         printf("Resuming an interrupted apply from stage '%s'.\n", stage);
         fflush(stdout);
     }
     /* Stage ordering, strictly forward. `reached` advances as each step is
      * confirmed, and a step whose work is already proven on disk is skipped. */
     int reached = resumed ? 1 : 0;
+
+    if (resumed) {
+        /* A resume starts from whatever the recovery session looks like now -
+         * usually with /data still mounted. Every stage past 'unmounted'
+         * requires it gone, so tear it down here, exactly as a fresh run does. */
+        if (mounts_unmount_data(p, &s.dev, &s.mounts, err, errlen) < 0) {
+            fail_apply(plan_dir, stage, err, errlen,
+                       "%s; nothing was changed, clear the holders and retry", err);
+            goto fail;
+        }
+        apply_log(plan_dir, "unmounted (resume)");
+        if (reached < 2)
+            reached = 2;
+    }
 
     if (!resumed) {
         /* Only after every read-only check succeeded do we create the session
@@ -434,7 +444,7 @@ int apply_run(const paths_t *p, const char *plan_dir, const char *confirm,
                "Keep power connected and do not use the recovery UI.\n",
                fs.blocks, plan.expected_blocks, plan.limit_blocks);
         fflush(stdout);
-        if (f2fs_shrink(block_fd, block_fd, plan.limit_blocks, &fs,
+        if (f2fs_shrink(block_fd, block_fd, s.dev.mapped, plan.limit_blocks, &fs,
                         &request_out, &expected_out, ferr, sizeof(ferr)) < 0) {
             fail_apply(plan_dir, "f2fs-shrink-started", err, errlen,
                        "F2FS resize failed: %s; GPT is unchanged. Run recover.", ferr);

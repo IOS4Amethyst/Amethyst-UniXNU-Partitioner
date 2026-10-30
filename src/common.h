@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define TOOL_NAME "amethyst-unixnu-partitioner"
-#define TOOL_VERSION "0.5.0"
+#define TOOL_VERSION "0.5.1"
 #define MIB UINT64_C(1048576)
 #define GIB UINT64_C(1073741824)
 #define GPT_ENTRY_SIZE 128U
@@ -306,8 +306,11 @@ int f2fs_probe_mounted(const char *mountpoint, const char *block_path, uint64_t 
                        f2fs_info_t *info, char *err, size_t errlen);
 uint64_t f2fs_request_blocks(uint64_t before, uint64_t limit);
 uint64_t f2fs_expected_blocks(uint64_t before, uint64_t request);
-int f2fs_shrink(int fs_fd, int block_fd, uint64_t limit_blocks, f2fs_info_t *info,
-                uint64_t *request_out, uint64_t *expected_out, char *err, size_t errlen);
+/* F2FS_IOC_RESIZE_FS requires a mounted instance; the shrink mounts privately. */
+int f2fs_shrink_needs_mount(void);
+int f2fs_shrink(int fs_fd, int block_fd, const char *device_path, uint64_t limit_blocks,
+                f2fs_info_t *info, uint64_t *request_out, uint64_t *expected_out,
+                char *err, size_t errlen);
 
 /* device.c */
 int identity_load(const paths_t *p, identity_t *id, char *err, size_t errlen);
