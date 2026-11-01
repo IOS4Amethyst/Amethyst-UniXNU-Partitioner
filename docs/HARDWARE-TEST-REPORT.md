@@ -1,5 +1,29 @@
 # Hardware and test report
 
+## Current checkpoint, 2026-11-02
+
+The Amethyst development device has already been split. Android remains bootable
+and its userdata is retained. Subsequent UniXNU recovery log pulls repeatedly
+identify `unixnu` as `/dev/block/sda34`, start LBA90660608, 33554432 blocks at
+4096 bytes (128 GiB). Reported remaining userdata capacity is approximately
+336.16 GiB. These observations supersede the original pre-split geometry below.
+
+Development included an F2FS shrink and a recovery crash reported during
+partition updating. The exact crash cause and completion point were not
+established by those symptoms alone. Do not treat the eventual usable layout as
+proof that every Apply step or the currently published ZIPs are hardware-qualified.
+No code or binary change is made by this documentation checkpoint.
+
+**Do not rerun Apply or restore the pre-shrink GPT on this already split device.**
+Restoring GPT cannot reverse an F2FS resize. Existing-partition refusal remains
+required. No repartitioning, flashing or destructive test was performed for this
+update. Keep independent backups and require a reviewed plan for any future write.
+
+Follow-up device evidence: [UI-working UniXNU checkpoint](https://github.com/IOS4Amethyst/UniXNU-amethyst/blob/main/scripts/log/WORKING-BOOT.md).
+The OS boots via RAM-only fastboot images; logs use the last32MiB inside unixnu,
+not Android userdata. UI presentation does not qualify partitioner recovery or
+validate backups. Original read-only test results follow unchanged.
+
 Report date: 2026-10-28
 
 ## 1. Amethyst hardware: read-only Inspect runs
