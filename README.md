@@ -4,16 +4,20 @@ Experimental recovery-side tooling that creates a `unixnu` GPT partition beside
 the existing Android `userdata` partition on the Xiaomi Redmi Note 14 Pro+ 5G
 (`amethyst`, SM7635).
 
-**Status:** version 0.5.1 (the helper embedded in `dist/amethyst-unixnu.sh`)
-completed inspect, plan and apply on an Amethyst. It is still experimental: keep
-independent backups of `userdata` and `metadata` before every apply. See
+**Status update (2026-11-02): the development device is already split and Android
+remains bootable. Do not run Apply again on that device.** Earlier development
+included a recovery crash during partition updating; this is not a clean
+end-to-end qualification of the currently published ZIPs. See the dated update in
 [`docs/HARDWARE-TEST-REPORT.md`](docs/HARDWARE-TEST-REPORT.md) and
 [`docs/COMPATIBILITY-REPORT.md`](docs/COMPATIBILITY-REPORT.md).
 
-The whole tool is now **one file**, `dist/amethyst-unixnu.sh`, run from a root
-shell inside recovery (`adb shell` or the recovery's terminal). It is not a
-flashable ZIP. A guided run does inspect, plan and apply in one go and asks
-before it writes anything.
+During the original read-only tests, every structural prerequisite passed: `userdata` (`sda33`) was
+the last occupied partition, an unused GPT entry exists, and F2FS uses supported
+4096-byte blocks. The first run was refused because `/metadata` was mounted and
+the filesystem was unclean; the second because the two F2FS superblock copies
+disagreed. The second refusal was a tool defect and is fixed here, but no plan or
+apply had been run at that earlier checkpoint. This paragraph is historical;
+the device's current geometry is recorded in the hardware report below.
 
 Inspect reports every blocker as `UNSUPPORTED [fixable-in-recovery]` or
 `UNSUPPORTED [hard]`, so it is clear whether the operator can clear it or the
