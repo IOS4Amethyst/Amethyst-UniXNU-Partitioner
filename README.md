@@ -4,18 +4,16 @@ Experimental recovery-side tooling that creates a `unixnu` GPT partition beside
 the existing Android `userdata` partition on the Xiaomi Redmi Note 14 Pro+ 5G
 (`amethyst`, SM7635).
 
-**Status: read-only Inspect has run on Amethyst hardware; Plan and Apply have
-not.** Do not treat it as production-ready, and do not assume the split preserves
-data until a full hardware test with independent backups has passed. See
+**Status:** version 0.5.1 (the helper embedded in `dist/amethyst-unixnu.sh`)
+completed inspect, plan and apply on an Amethyst. It is still experimental: keep
+independent backups of `userdata` and `metadata` before every apply. See
 [`docs/HARDWARE-TEST-REPORT.md`](docs/HARDWARE-TEST-REPORT.md) and
 [`docs/COMPATIBILITY-REPORT.md`](docs/COMPATIBILITY-REPORT.md).
 
-On the real device every structural prerequisite passes: `userdata` (`sda33`) is
-the last occupied partition, an unused GPT entry exists, and F2FS uses supported
-4096-byte blocks. The first run was refused because `/metadata` was mounted and
-the filesystem was unclean; the second because the two F2FS superblock copies
-disagreed. The second refusal was a tool defect and is fixed here, but no plan or
-apply has been run on hardware.
+The whole tool is now **one file**, `dist/amethyst-unixnu.sh`, run from a root
+shell inside recovery (`adb shell` or the recovery's terminal). It is not a
+flashable ZIP. A guided run does inspect, plan and apply in one go and asks
+before it writes anything.
 
 Inspect reports every blocker as `UNSUPPORTED [fixable-in-recovery]` or
 `UNSUPPORTED [hard]`, so it is clear whether the operator can clear it or the
@@ -46,7 +44,7 @@ unformatted so that UniXNU tooling can create its filesystem separately.
 ## Requirements
 
 - Amethyst (`ro.product.device=amethyst`) with a TWRP-like recovery that provides
-  root shell, `sha256sum`, `od`, `unzip`, `awk` and a working decrypted `/data`.
+  root shell, `sha256sum`, `od`, `tail`, `awk` and a working decrypted `/data`.
 - `/data` mounted read-write as single-device F2FS with checkpoints enabled and
   4096-byte blocks, 512 blocks per segment and one segment per section.
 - A recovery kernel that implements `F2FS_IOC_RESIZE_FS`.
@@ -61,18 +59,30 @@ unformatted so that UniXNU tooling can create its filesystem separately.
 Unsupported conditions stop plan/apply. Inspect still writes a report and marks
 `RESULT: UNSUPPORTED` so the reason can be reviewed.
 
-## ZIPs
+## The script
 
-| ZIP | Purpose | Writes partitions? |
-| --- | --- | --- |
-| `dist/Amethyst-UniXNU-Partitioner-Inspect.zip` | Read-only report | No |
-| `dist/Amethyst-UniXNU-Partitioner-Plan.zip` | Create a plan bundle | No |
-| `dist/Amethyst-UniXNU-Partitioner-Apply.zip` | Gated destructive apply, plus read-only `verify`/`recover` modes | Only with a valid plan and confirmation |
-
-Each ZIP contains a statically linked AArch64 helper, a small shell entry point,
-sample requests and a short in-ZIP README. The installer checks the helper's
-architecture and pinned SHA-256 before executing it and never downloads
+`dist/amethyst-unixnu.sh` is a shell front end with the statically linked
+AArch64 helper appended to it. On start it copies itself to `/tmp` (so it never
+holds `/sdcard` open), extracts the helper to RAM, checks it is ELF64/AArch64
+and matches the pinned SHA-256, and only then runs it. It never downloads
 anything.
+
+| Command | What it does | Writes partitions? |
+| --- | --- | --- |
+| `sh amethyst-unixnu.sh` | Guided: inspect, plan, then apply after you type `APPLY` | Only after confirmation |
+| `sh amethyst-unixnu.sh inspect` | Read-only report | No |
+| `sh amethyst-unixnu.sh plan [--size GIB] [--reserve MIB]` | Create a plan bundle | No |
+| `sh amethyst-unixnu.sh apply [--plan DIR]` | Apply a plan (newest plan by default) | Yes |
+| `sh amethyst-unixnu.sh verify [--plan DIR]` | Read-only check after reboot | No |
+| `sh amethyst-unixnu.sh recover [--plan DIR]` | Read-only stage/log summary | No |
+| `sh amethyst-unixnu.sh selftest` | Helper's built-in tests | No |
+
+Reports, plans and a session log go to
+`<dir>/Amethyst-UniXNU-Partitioner/`, where `<dir>` is `--dir DIR` if given,
+otherwise `/usb_otg`, then `/external_sd`, then `/tmp`. `/sdcard` and `/data`
+are refused: in recovery they are the decrypted `userdata`, which apply
+unmounts. A plan in `/tmp` is lost on reboot, so use a USB OTG stick or SD card
+if you want to verify or resume after a reboot.
 
 ## Quick start
 
@@ -82,84 +92,44 @@ Save the boot/recovery images and, if possible, offline images of `userdata` and
 `metadata`. A GPT backup contains no file contents. Restoring an old GPT cannot
 undo an F2FS shrink.
 
-### 2. Inspect
+### 2. Boot recovery and get a shell
 
-Boot recovery, decrypt and mount `/data` read-write, then install
-`Amethyst-UniXNU-Partitioner-Inspect.zip`. Read the report under:
+In recovery: decrypt `/data` and make sure it is mounted read-write, unmount
+`/metadata` if the recovery mounted it, and mount the USB OTG stick if you have
+one. Then from the PC:
 
-```
-/usb_otg/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.txt
-/usb_otg/Amethyst-UniXNU-Partitioner/inspect-<timestamp>.json
-```
-
-Require `RESULT: SUPPORTED`. If it says `UNSUPPORTED`, read each line:
-`fixable-in-recovery` means the operator can clear it (unmount `/metadata`, mount
-decrypted `/data`, shut Android down cleanly, expose a shell); `hard` means the
-layout itself cannot be split and this tool will not be able to help.
-
-A `Superblocks match: no` warning is normal after an unclean reboot: F2FS keeps
-two superblock copies and one may lag. The report names the active copy, and a
-plan records it so apply refuses if it changes. Only a mismatch with no valid
-F2FS copy in either block is a refusal.
-
-### 3. Plan
-
-Create `/usb_otg/Amethyst-UniXNU-Partitioner/request.conf`:
-
-> **Use the USB OTG stick, not `/sdcard`.** In recovery `/sdcard` is a bind mount
-> of the decrypted `userdata`. Writing there makes every ZIP install create a
-> holder that apply must remove before it can unmount `/data`, and apply refuses
-> to load a bundle from userdata-backed storage anyway. The installer requires
-> `/usb_otg` and stops if it is missing rather than falling back.
-
-```conf
-mode = plan
-size_gib = 16
-reserve_mib = 1024
-plan_dir = /usb_otg/Amethyst-UniXNU-Partitioner/plans/amethyst-1
+```sh
+adb push dist/amethyst-unixnu.sh /tmp/
+adb shell
+cd /
+sh /tmp/amethyst-unixnu.sh
 ```
 
-`size_gib` must be positive and resolve to whole MiB. `plan_dir` must be an
-absolute path on the USB OTG stick or `/tmp`, never on `/sdcard` or `/data`.
-Use the actual mount path shown in recovery; `/usb_otg` is where this project
-expects it.
+Or copy the file to the OTG stick and run `sh /usb_otg/amethyst-unixnu.sh` from
+the recovery's terminal. Stay out of `/sdcard` and `/data` in that shell (`cd /`
+first): apply cannot unmount `/data` while your shell is sitting in it, and the
+script warns if it is.
 
-`reserve_mib` (default `1024`, retained for layout compatibility) leaves an
-**unallocated gap after unixnu**, outside both new partition entries. `0` omits
-the extra gap. It does **not** reserve space inside Android F2FS or authorize
-raw writes there. Split-device sheng Data persistence and log/export must stay
-disabled until a dedicated storage allocation is validated. Do not run Apply
-based on the earlier, incorrect claim that this gap protects persistence.
-Plan records the value in `plan.conf`, `plan.json` and `plan.env`.
+### 3. Follow the guided run
 
-Install the Plan ZIP. Review the printed layout and then inspect the bundle:
+1. **Inspect** runs read-only and prints `RESULT: SUPPORTED` or the blockers.
+   `fixable-in-recovery` means you can clear it (unmount `/metadata`, mount
+   decrypted `/data`, shut Android down cleanly); `hard` means the layout cannot
+   be split. A `Superblocks match: no` warning after an unclean reboot is normal.
+2. **Plan** asks for the `unixnu` size in GiB (16 suggested; fractions must
+   resolve to whole MiB) and writes a bundle under `plans/plan-<timestamp>/`.
+   It makes no partition or filesystem writes. Review the printed layout.
+3. **Apply** shows `plan.txt` and the plan's confirmation phrase. Type `APPLY`
+   to run it; anything else cancels with nothing changed. Keep power connected
+   and do not touch the recovery UI until it finishes.
 
-```
-plan.conf  plan.txt  plan.json  plan.env
-gpt-primary.before  gpt-backup.before
-gpt-primary.after   gpt-backup.after
-session  stage  SHA256SUMS
-```
+You can also run each step on its own (`inspect`, `plan`, `apply`), for example
+to plan now and apply later. `--size` and `--reserve` skip the prompts in
+`plan`. `reserve_mib` (default `1024`) leaves an unallocated gap after `unixnu`;
+it does **not** reserve space inside Android F2FS, and split-device sheng Data
+persistence must stay disabled until a dedicated allocation is validated.
 
-Do not edit any file in the bundle. A plan is single-use and contains a random
-plan ID, a session ID, the hardware serial and the created GPT images.
-
-### 4. Apply
-
-The bundle must stay readable when `/data` is unmounted: the USB OTG stick or
-`/tmp`. Replace
-`/usb_otg/Amethyst-UniXNU-Partitioner/request.conf` with:
-
-```conf
-mode = apply
-plan = /usb_otg/Amethyst-UniXNU-Partitioner/plans/amethyst-1
-confirm = unixnu <plan_id> <hardware_serial> <unixnu_bytes>
-acknowledge_data_loss = yes
-```
-
-Copy `confirm` exactly from `plan.txt` or `plan.conf`. Install the Apply ZIP and
-keep power connected. Do not use the recovery UI, reboot, or run anything else
-while it works.
+### How apply works
 
 Apply rechecks, in order: bundle hashes, stage, identity, serial, disk size and
 sector size, `userdata`/`metadata` geometry and GUIDs, both GPT images, F2FS
@@ -194,28 +164,27 @@ back the backup GPT, writes and reads back the primary GPT, and validates both
 copies and partition identities before marking the stage `complete`.
 
 There is **no automatic retry and no rollback**, but an interrupted apply can be
-**resumed**. Run the same Apply request again: the recorded stage is remeasured
+**resumed**. Run `apply` again with the same plan: the recorded stage is remeasured
 against the device instead of being trusted, so apply either continues from where
 it stopped or refuses with the reason. Specifically it re-reads the F2FS
 superblock (accepting either the planned size or the target size), classifies the
 on-disk GPT as original / backup-only / both-written, and skips every step whose
 effect is already present. A shrink that already happened is not repeated.
 
-Run the Apply ZIP in `mode = recover` (or the helper's `recover` command) to see
-the last persisted stage and log without touching anything.
+`sh amethyst-unixnu.sh recover` shows the last persisted stage and log without
+touching anything. If apply stops, the script prints that summary for you.
 
-### 5. Verify after reboot
+### 4. Verify after reboot
 
-Reboot recovery. Set `request.conf` to a read-only mode:
+Reboot to recovery and run:
 
-```conf
-mode = verify
-plan = /usb_otg/Amethyst-UniXNU-Partitioner/plans/amethyst-1
+```sh
+sh /tmp/amethyst-unixnu.sh verify --plan /usb_otg/Amethyst-UniXNU-Partitioner/plans/plan-<timestamp>
 ```
 
-Install the Apply ZIP again. `verify` checks both GPT copies, partition
-identities, kernel partition ranges and the resized F2FS superblock. It does not
-format or create a filesystem in `unixnu`.
+`verify` checks both GPT copies, partition identities, kernel partition ranges
+and the resized F2FS superblock. It does not format or create a filesystem in
+`unixnu`.
 
 Then boot Android and confirm `userdata` still mounts and files are intact.
 Create and test the UniXNU filesystem separately; that is outside this tool's
@@ -272,8 +241,8 @@ abort on unsupported conditions.
 ## Security and integrity
 
 - The helper is static AArch64, built without test hooks, stripped, and pinned by
-  SHA-256 in each ZIP's installer.
-- The installer validates ELF64/AArch64 before execution and performs no network
+  SHA-256 in the script header.
+- The script validates ELF64/AArch64 before execution and performs no network
   access.
 - Plan metadata and GPT images are mode `0600`; the plan directory is mode
   `0700` and `SHA256SUMS` is mode `0644`.
@@ -300,8 +269,10 @@ ROOTFS=/path/to/alpine-aarch64-rootfs QEMU=/path/to/qemu-aarch64 \
     ./scripts/build-helper-qemu.sh
 ```
 
-That produces `out/partitioner`; the ZIPs are assembled by `scripts/build.sh`
-and the archive hashes are recorded in `dist/SHA256SUMS`.
+That produces `out/partitioner`. `scripts/build.sh` (or, for an existing
+helper, `scripts/make-terminal-script.sh`) appends it to
+`installer/amethyst-unixnu.sh.in` to make `dist/amethyst-unixnu.sh`, and
+records its hash in `dist/SHA256SUMS`.
 
 The offline suite uses synthetic fixtures and must never open a real block
 device. Example outputs are in [`examples/`](examples/), including the

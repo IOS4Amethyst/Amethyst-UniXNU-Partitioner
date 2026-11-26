@@ -815,7 +815,7 @@ printf '%s\n' "$((114432 * 8 + 1))" >"$FIX/sys/devices/fixture/block/sda/sda4/st
 expect_fail 'verify rejects a mismatched kernel unixnu range' \
     fixture_env "$HOST" verify --root "$FIX" --identity /identity.conf --plan /plans/p1
 
-echo '== static helper and ZIP artifacts =='
+echo '== static helper and terminal script =='
 if [ -x out/partitioner ]; then
     ok 'static helper exists'
     if [ "$(od -An -tu1 -j4 -N1 out/partitioner | tr -d ' \n')" = 2 ] &&
@@ -858,53 +858,45 @@ else
 fi
 
 HELPER_SHA=$(sha256sum out/partitioner 2>/dev/null | cut -d' ' -f1)
-for mode in Inspect Plan Apply; do
-    zip="dist/Amethyst-UniXNU-Partitioner-$mode.zip"
-    if [ -f "$zip" ]; then
-        ok "ZIP exists: $zip"
-        dest="$WORK/zip-$mode"
-        rm -rf "$dest"
-        mkdir -p "$dest"
-        unzip -q "$zip" -d "$dest" || bad "ZIP extracts: $zip"
-        if [ -f "$dest/META-INF/com/google/android/update-binary" ] &&
-           [ -f "$dest/META-INF/com/google/android/updater-script" ] &&
-           [ -f "$dest/bin/partitioner" ]; then
-            ok "ZIP layout is complete: $mode"
-        else
-            bad "ZIP layout is complete: $mode"
-        fi
-        if sh -n "$dest/META-INF/com/google/android/update-binary" 2>/dev/null; then
-            ok "installer shell syntax: $mode"
-        else
-            bad "installer shell syntax: $mode"
-        fi
-        if [ -n "$HELPER_SHA" ] &&
-           grep -Fq "EXPECTED_HELPER_SHA256='$HELPER_SHA'" \
-               "$dest/META-INF/com/google/android/update-binary"; then
-            ok "installer pins the helper hash: $mode"
-        else
-            bad "installer pins the helper hash: $mode"
-        fi
-        if [ "$(sha256sum "$dest/bin/partitioner" | cut -d' ' -f1)" = "$HELPER_SHA" ]; then
-            ok "ZIP payload matches the built helper: $mode"
-        else
-            bad "ZIP payload matches the built helper: $mode"
-        fi
-        if grep -Fq "MODE='$(printf '%s' "$mode" | tr 'A-Z' 'a-z')'" \
-               "$dest/META-INF/com/google/android/update-binary"; then
-            ok "ZIP has the expected mode: $mode"
-        else
-            bad "ZIP has the expected mode: $mode"
-        fi
-        if grep -Eqi 'curl|wget|http://|https://' "$dest/META-INF/com/google/android/update-binary"; then
-            bad "installer performs no network access: $mode"
-        else
-            ok "installer performs no network access: $mode"
-        fi
+SCRIPT=dist/amethyst-unixnu.sh
+if [ -f "$SCRIPT" ]; then
+    ok "terminal script exists: $SCRIPT"
+    if grep -Fq "HELPER_SHA256='$HELPER_SHA'" "$SCRIPT"; then
+        ok 'terminal script pins the helper hash'
     else
-        bad "ZIP exists: $zip (run scripts/build.sh)"
+        bad 'terminal script pins the helper hash'
     fi
-done
+    size=$(sed -n "s/^HELPER_SIZE='\([0-9]*\)'$/\1/p" "$SCRIPT" | head -n 1)
+    if [ -n "$size" ] &&
+       [ "$(tail -c "$size" "$SCRIPT" | sha256sum | cut -d' ' -f1)" = "$HELPER_SHA" ]; then
+        ok 'terminal script payload matches the built helper'
+    else
+        bad 'terminal script payload matches the built helper'
+    fi
+    if [ -n "$size" ]; then
+        total=$(wc -c <"$SCRIPT" | tr -d ' ')
+        head -c $((total - size)) "$SCRIPT" >"$WORK/front.sh"
+        if tail -n 1 "$WORK/front.sh" | grep -qx '__HELPER_PAYLOAD__' &&
+           sh -n "$WORK/front.sh" 2>/dev/null; then
+            ok 'terminal script front end has valid shell syntax'
+        else
+            bad 'terminal script front end has valid shell syntax'
+        fi
+        if grep -Eqi 'curl|wget|http://|https://' "$WORK/front.sh"; then
+            bad 'terminal script performs no network access'
+        else
+            ok 'terminal script performs no network access'
+        fi
+    fi
+    if TMPDIR="$WORK" sh "$SCRIPT" --help >"$WORK/cmd.out" 2>&1 &&
+       grep -Fq 'terminal edition' "$WORK/cmd.out"; then
+        ok 'terminal script --help runs and cleans up after itself'
+    else
+        bad 'terminal script --help runs and cleans up after itself'
+    fi
+else
+    bad "terminal script exists: $SCRIPT (run scripts/build.sh)"
+fi
 if [ -f dist/SHA256SUMS ] && (cd dist && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
     ok 'dist/SHA256SUMS verifies'
 else
