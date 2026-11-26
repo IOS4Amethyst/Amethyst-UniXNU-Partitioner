@@ -18,9 +18,8 @@ This directory is self-contained. Nothing here modifies the existing
 | `src/plan.c` | Request parsing, layout planning, plan bundle writing, bundle verification and matching |
 | `src/apply.c` | Gated destructive apply, session/stage log, GPT writes, verify and recover |
 | `src/selftest.c` | Host self-tests |
-| `installer/update-binary.in` | Recovery shell entry point (ZIP mode is substituted at build time) |
-| `installer/updater-script` | Present because recovery installers expect it; no logic |
-| `installer/README.txt.in` | In-ZIP readme |
+| `installer/amethyst-unixnu.sh.in` | Terminal front end; the helper is appended after its last line |
+| `scripts/make-terminal-script.sh` | Packs `out/partitioner` into `dist/amethyst-unixnu.sh` |
 | `examples/` | Sample requests plus inspect/plan output from a synthetic fixture |
 | `tests/make_fixture.py` | Synthetic Amethyst-like GPT/F2FS/sysfs fixture |
 | `tests/corrupt_fixture.py` | Builds deliberately broken fixture variants for failure-path tests |
@@ -29,7 +28,7 @@ This directory is self-contained. Nothing here modifies the existing
 | `docs/COMPATIBILITY-REPORT.md` | Package, provenance, build and recovery compatibility report |
 | `tests/check_after.py` | Independent GPT/F2FS result checker for the fixture |
 | `tests/mock_reboot.py` | Simulates the post-reboot kernel partition view |
-| `scripts/build.sh` | Host binary, static helper and three ZIPs |
+| `scripts/build.sh` | Host binary, static helper and the terminal script |
 | `scripts/build-helper-qemu.sh` | Static helper from an Alpine aarch64 rootfs under qemu-user (no Android clang) |
 
 ## Upstream provenance
@@ -54,8 +53,8 @@ Material differences from the host-side parent scripts:
 
 - No Python or ADB is used at runtime; the recovery side is one static AArch64 C
   helper plus a small shell entry point.
-- Plan and apply are separate ZIPs. Apply consumes a previously reviewed bundle
-  instead of regenerating a plan and applying it in one step.
+- Plan and apply are separate steps, even in the guided run. Apply consumes a
+  previously written bundle instead of regenerating a plan and applying it in one step.
 - The bundle must be off `userdata` because apply unmounts `/data`.
 - Apply persists a session ID and stage log and never retries automatically; a second
   run resumes from the recorded stage only after re-verifying the device.
@@ -77,7 +76,7 @@ Material differences from the host-side parent scripts:
   /home/bluekyeet/AndroidBuilds/EvolutionX/prebuilts/build-tools/sysroots/aarch64-unknown-linux-musl
   ```
 
-- `zip`, `sha256sum`, `od`, `readelf` and `file` for packaging/checks.
+- `sha256sum`, `od`, `readelf` and `file` for packaging/checks.
 - Optional: `qemu-aarch64` for running the static helper's self-test on the host.
 
 If no Android clang or AArch64 musl sysroot is available, the helper can still
@@ -125,8 +124,8 @@ The script:
 
 3. rejects a dynamically linked helper or a non-AArch64/non-ELF64 result;
 4. optionally runs the helper self-test under `qemu-aarch64`;
-5. substitutes the helper SHA-256 and mode into the installer;
-6. builds the three ZIPs in `dist/` and writes `dist/SHA256SUMS`.
+5. substitutes the helper SHA-256 and size into the terminal front end;
+6. appends the helper to make `dist/amethyst-unixnu.sh` and writes `dist/SHA256SUMS`.
 
 The shipped helper is built **without** `-DUNIXNU_TESTING`, so no test hook is
 present. The host test binary includes the hooks and is never packaged.
@@ -149,8 +148,8 @@ The suite creates a temporary fixture, then checks:
   byte-identity and an independent GPT/F2FS result check;
 - second-apply refusal and recover output;
 - simulated reboot plus `verify`, and rejection of a wrong kernel range;
-- ZIP layout, shell syntax, pinned helper hash, mode strings and absence of
-  network references.
+- terminal script payload hash, pinned helper hash, front-end shell syntax,
+  `--help` and absence of network references.
 
 Superblock handling is covered by these cases: two identical copies, one valid
 copy plus one damaged copy in either direction (warning naming the damaged copy),
@@ -220,9 +219,9 @@ format is.
 
 ## Reproducibility
 
-`zip -X` removes extra ZIP metadata, and the helper is stripped and pinned by
-hash, but ZIP entry timestamps and the random plan ID in examples still vary.
-Byte-identical ZIP reproduction is not claimed. Compare `dist/SHA256SUMS` for
+The helper is stripped and pinned by hash, and the terminal script is the
+template plus that helper, so the same helper gives the same script. The random
+plan ID in examples still varies. Compare `dist/SHA256SUMS` for
 the artifacts you actually distribute.
 
 ## License

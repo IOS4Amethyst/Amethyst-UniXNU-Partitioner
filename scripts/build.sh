@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: BSD-2-Clause-Patent
-# Build the host test binary, the static AArch64 helper and the three ZIPs.
+# Build the host test binary, the static AArch64 helper and the single-file
+# terminal script dist/amethyst-unixnu.sh.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -89,34 +90,9 @@ fi
 HELPER_SHA256=$(sha256sum out/partitioner | cut -d' ' -f1)
 [ -n "$HELPER_SHA256" ] || { echo "error: cannot hash helper" >&2; exit 1; }
 
-build_zip() {
-    mode=$1
-    name=$2
-    stage="build/zip-$mode"
-    rm -rf "$stage"
-    mkdir -p "$stage/META-INF/com/google/android" "$stage/bin" "$stage/samples"
-    cp out/partitioner "$stage/bin/partitioner"
-    chmod 755 "$stage/bin/partitioner"
-    cp installer/updater-script "$stage/META-INF/com/google/android/updater-script"
-    sed -e "s/@HELPER_SHA256@/$HELPER_SHA256/g" \
-        -e "s/@ZIP_MODE@/$mode/g" \
-        -e "s/@TOOL_VERSION@/$VERSION/g" \
-        installer/update-binary.in >"$stage/META-INF/com/google/android/update-binary"
-    chmod 755 "$stage/META-INF/com/google/android/update-binary"
-    sed -e "s/@ZIP_MODE@/$mode/g" -e "s/@TOOL_VERSION@/$VERSION/g" \
-        installer/README.txt.in >"$stage/README.txt"
-    cp examples/request-plan.conf "$stage/samples/request-plan.conf"
-    cp examples/request-apply.conf "$stage/samples/request-apply.conf"
-    (cd "$stage" && zip -X -q -r "$ROOT/dist/$name" .)
-    echo "built dist/$name"
-}
-
-echo "== ZIPs =="
-build_zip inspect Amethyst-UniXNU-Partitioner-Inspect.zip
-build_zip plan    Amethyst-UniXNU-Partitioner-Plan.zip
-build_zip apply   Amethyst-UniXNU-Partitioner-Apply.zip
-
-(cd dist && sha256sum ./*.zip >SHA256SUMS)
+echo "== terminal script =="
+rm -f dist/amethyst-unixnu.sh
+HELPER=out/partitioner OUT=dist/amethyst-unixnu.sh sh scripts/make-terminal-script.sh
 echo
 echo "== artifacts =="
 cat dist/SHA256SUMS
